@@ -956,28 +956,19 @@
   <section class="form-section" id="suggest">
     <h2>💬 Suggest a Feature or Report a Bug</h2>
     <p class="subtitle">
-      Have an idea? Found something broken? I'd love to hear from you.
-      Your message goes directly to me.
+      Have an idea? Found something broken? Fill in the form below — clicking
+      <strong>Open GitHub Issue</strong> takes you straight to a pre-filled issue
+      on the repository. Hit <em>Submit new issue</em> there and it lands directly in my inbox.
     </p>
 
-    <form id="suggestion-form"
-          action="https://formspree.io/f/mbaffour-lysis-curve"
-          method="POST">
+    <form id="suggestion-form">
 
       <div class="form-row">
         <label for="fname">
           Your name
-          <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#94a3b8;"> (optional)</span>
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#94a3b8;"> (optional — shown in the issue body)</span>
         </label>
         <input type="text" id="fname" name="name" placeholder="Jane Smith" />
-      </div>
-
-      <div class="form-row">
-        <label for="femail">
-          Email
-          <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#94a3b8;"> (optional — only if you want a reply)</span>
-        </label>
-        <input type="email" id="femail" name="email" placeholder="you@example.com" />
       </div>
 
       <div class="form-row">
@@ -996,18 +987,14 @@
           placeholder="Describe the feature you'd like, or what went wrong and how to reproduce it..."></textarea>
       </div>
 
-      <input type="hidden" name="_subject" value="Lysis Curve App — feedback" />
+      <button type="submit" class="form-submit" id="gh-issue-btn">
+        Open GitHub Issue →
+      </button>
 
-      <button type="submit" class="form-submit">Transmit Message →</button>
-
-      <p class="form-note">
-        Or open an issue directly on
-        <a href="https://github.com/mbaffour/lysis-curve-app/issues" target="_blank">GitHub</a>.
+      <p class="form-note" style="margin-top:14px;">
+        Clicking the button opens a pre-filled GitHub issue in a new tab.
+        You'll need a free GitHub account to submit it — that's how I receive and track all messages.
       </p>
-
-      <div id="form-success">
-        ✅ Transmission successful! I'll review it and respond if you left an email.
-      </div>
     </form>
   </section>
 
@@ -1147,37 +1134,67 @@
 })();
 
 /* ══════════════════════════════════════════════════════════
-   FORMSPREE AJAX SUBMISSION
+   GITHUB ISSUE BUILDER
+   Intercepts the form, builds a pre-filled GitHub new-issue
+   URL from the field values, and opens it in a new tab.
+   No server or account needed on this side.
 ══════════════════════════════════════════════════════════ */
 (function () {
-  const form    = document.getElementById('suggestion-form');
-  const success = document.getElementById('form-success');
+  const form = document.getElementById('suggestion-form');
   if (!form) return;
 
-  form.addEventListener('submit', async function (e) {
-    e.preventDefault();
-    const btn = form.querySelector('.form-submit');
-    btn.textContent = 'Transmitting…';
-    btn.disabled = true;
+  const REPO = 'mbaffour/lysis-curve-app';
 
-    try {
-      const res = await fetch(form.action, {
-        method:  'POST',
-        body:    new FormData(form),
-        headers: { 'Accept': 'application/json' },
-      });
-      if (res.ok) {
-        form.reset();
-        success.style.display = 'block';
-        btn.style.display = 'none';
-      } else {
-        throw new Error();
-      }
-    } catch (_) {
-      btn.textContent = 'Transmit Message →';
-      btn.disabled = false;
-      alert('Could not send — please open a GitHub Issue instead.');
+  const TYPE_LABELS = {
+    feature: '[Feature Request]',
+    bug:     '[Bug Report]',
+    question:'[Question]',
+    other:   '[Feedback]',
+  };
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+
+    const name    = document.getElementById('fname').value.trim();
+    const type    = document.getElementById('ftype').value;
+    const message = document.getElementById('fmessage').value.trim();
+
+    if (!message) {
+      document.getElementById('fmessage').focus();
+      return;
     }
+
+    /* ── Build issue title ── */
+    const label = TYPE_LABELS[type] || '[Feedback]';
+    const title = name
+      ? label + ' from ' + name
+      : label;
+
+    /* ── Build issue body ── */
+    const typeDisplay = {
+      feature: 'Feature request',
+      bug:     'Bug report',
+      question:'Question',
+      other:   'Other / General feedback',
+    }[type] || type;
+
+    const body = [
+      '## ' + typeDisplay,
+      '',
+      message,
+      '',
+      name ? '---\n*Submitted by: ' + name + '*' : '',
+    ].filter(function (l, i, a) {
+      /* remove trailing empty lines */
+      return !(l === '' && i === a.length - 1);
+    }).join('\n');
+
+    /* ── Open pre-filled GitHub issue ── */
+    const url = 'https://github.com/' + REPO + '/issues/new'
+      + '?title='  + encodeURIComponent(title)
+      + '&body='   + encodeURIComponent(body);
+
+    window.open(url, '_blank', 'noopener');
   });
 })();
 </script>
