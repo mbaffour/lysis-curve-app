@@ -3404,6 +3404,39 @@ server <- function(input, output, session) {
     if (nchar(cap) == 0) "(no fields selected or all fields empty)" else cap
   })
 
+  # ── Helper: human-readable ggplot2 shape name ──────────────────────────────
+  shape_name <- function(code) {
+    lut <- c(`0`="Open Square", `1`="Open Circle", `2`="Open Triangle Up",
+             `3`="Plus", `4`="X", `5`="Open Diamond", `6`="Open Triangle Down",
+             `7`="Square-X", `8`="Asterisk", `9`="Diamond-Plus",
+             `10`="Circle-Plus", `11`="Star", `12`="Square-Plus",
+             `13`="Circle-X", `14`="Square-Triangle",
+             `15`="Filled Square", `16`="Filled Circle",
+             `17`="Filled Triangle Up", `18`="Filled Diamond",
+             `19`="Filled Circle (lg)", `20`="Bullet",
+             `21`="Circle (fill)", `22`="Square (fill)",
+             `23`="Diamond (fill)", `24`="Triangle Up (fill)",
+             `25`="Triangle Down (fill)")
+    nm <- lut[as.character(code)]
+    if (!is.na(nm)) paste0(nm, " (", code, ")") else paste0("Shape ", code)
+  }
+
+  # ── Helper: build sample-aesthetics block for text / csv exports ─────────────
+  get_sample_aes_block <- function() {
+    samps <- tryCatch(input$selected_samples, error = function(e) NULL)
+    if (is.null(samps) || length(samps) == 0) return(NULL)
+    aes_v <- tryCatch(resolve_aesthetics(samps), error = function(e) NULL)
+    if (is.null(aes_v)) return(NULL)
+    labels    <- gsub("\n", " ", aes_v$leg_labels)   # unwrap newlines for export
+    list(
+      sample    = samps,
+      label     = labels,
+      color     = unname(aes_v$colors),
+      line_type = unname(aes_v$line_types),
+      shape     = vapply(unname(aes_v$shapes), shape_name, character(1))
+    )
+  }
+
   # TXT download
   output$download_notes_txt <- downloadHandler(
     filename = function() {
@@ -3459,7 +3492,30 @@ server <- function(input, output, session) {
       }
       tags_sec <- if (nchar(trimws(n$tags)) > 0)
         paste0("TAGS\n", strrep("-", 40), "\n  ", trimws(n$tags), "\n\n") else ""
-      writeLines(paste0(hdr, identity_sec, biology_sec, cond_sec, custom_sec, free_sec, tags_sec), file)
+      # Sample aesthetics section
+      aes_block <- get_sample_aes_block()
+      aes_sec <- ""
+      if (!is.null(aes_block) && length(aes_block$sample) > 0) {
+        w1 <- max(nchar(aes_block$sample), nchar("Sample"))
+        w2 <- max(nchar(aes_block$label),  nchar("Label"))
+        w3 <- 9L   # "Color" / hex
+        w4 <- max(nchar(aes_block$line_type), nchar("Line Type"))
+        hdr_row <- sprintf("  %-*s  %-*s  %-*s  %-*s  %s",
+                           w1, "Sample", w2, "Label", w3, "Color",
+                           w4, "Line Type", "Shape")
+        sep_row <- paste0("  ", strrep("-", nchar(hdr_row) - 2))
+        rows <- mapply(function(s, l, c_, lt, sh)
+          sprintf("  %-*s  %-*s  %-*s  %-*s  %s",
+                  w1, s, w2, l, w3, c_, w4, lt, sh),
+          aes_block$sample, aes_block$label,
+          aes_block$color,  aes_block$line_type,
+          aes_block$shape,  SIMPLIFY = TRUE)
+        aes_sec <- paste0("SAMPLE AESTHETICS\n", strrep("-", 40), "\n",
+                          hdr_row, "\n", sep_row, "\n",
+                          paste(rows, collapse = "\n"), "\n\n")
+      }
+      writeLines(paste0(hdr, identity_sec, biology_sec, cond_sec, custom_sec,
+                        free_sec, tags_sec, aes_sec), file)
     }
   )
 
@@ -3503,6 +3559,15 @@ server <- function(input, output, session) {
       )
       if (length(custom_cols) > 0) {
         for (k in names(custom_cols)) row[[k]] <- custom_cols[[k]]
+      }
+      # Append sample aesthetic columns (semicolon-delimited lists)
+      aes_block <- get_sample_aes_block()
+      if (!is.null(aes_block) && length(aes_block$sample) > 0) {
+        row$Samples         <- paste(aes_block$sample,    collapse = "; ")
+        row$SampleLabels    <- paste(aes_block$label,     collapse = "; ")
+        row$SampleColors    <- paste(aes_block$color,     collapse = "; ")
+        row$SampleLineTypes <- paste(aes_block$line_type, collapse = "; ")
+        row$SampleShapes    <- paste(aes_block$shape,     collapse = "; ")
       }
       write.csv(row, file, row.names = FALSE)
     }
