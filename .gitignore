@@ -1,0 +1,15 @@
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Local session backups (not needed in repo)
+archive/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Shiny temp files
+rsconnect/
