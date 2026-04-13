@@ -118,6 +118,9 @@ library(jsonlite)
 library(zoo)    # rolling calculations for growth metrics
 library(DT)     # interactive tables in Analysis tab
 
+has_rhandsontable <- requireNamespace("rhandsontable", quietly = TRUE)
+if (has_rhandsontable) library(rhandsontable)
+
 has_officer   <- requireNamespace("officer",   quietly = TRUE)
 has_rvg       <- requireNamespace("rvg",       quietly = TRUE)
 has_gifski    <- requireNamespace("gifski",    quietly = TRUE)
@@ -1049,6 +1052,36 @@ ui <- fluidPage(
                    )
                  ),
                  
+                 # ── Threshold / Annotation Line ───────────────────────────────────────────
+                 tags$details(
+                   tags$summary("Threshold / Annotation Line"),
+                   div(class = "panel-section",
+                     h4("Horizontal Threshold Line", class = "panel-title"),
+                     checkboxInput("enable_threshold", "Show threshold line", value = FALSE),
+                     conditionalPanel("input.enable_threshold",
+                       numericInput("threshold_value", "OD threshold value:", value = 0.3, step = 0.01),
+                       fluidRow(
+                         column(6, selectInput("threshold_color", "Line color:",
+                           choices = c("Red" = "#e74c3c", "Blue" = "#2980b9",
+                                       "Black" = "#000000", "Green" = "#27ae60",
+                                       "Orange" = "#e67e22", "Custom" = "custom"),
+                           selected = "#e74c3c")),
+                         column(6, conditionalPanel("input.threshold_color == 'custom'",
+                           textInput("threshold_color_custom", "HEX:", "#e74c3c")))
+                       ),
+                       fluidRow(
+                         column(6, selectInput("threshold_linetype", "Line type:",
+                           choices = c("Dashed" = "dashed", "Dotted" = "dotted",
+                                       "Solid" = "solid", "Dotdash" = "dotdash"),
+                           selected = "dashed")),
+                         column(6, numericInput("threshold_linewidth", "Line width:", value = 0.8, min = 0.2, max = 5, step = 0.1))
+                       ),
+                       textInput("threshold_label", "Label (leave blank for none):", value = "Threshold"),
+                       checkboxInput("threshold_show_crossings", "Report crossing times in console", value = FALSE)
+                     )
+                   )
+                 ),
+
                  # ── Variable Styling ──────────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Variable Styling"),
@@ -1491,6 +1524,58 @@ ui <- fluidPage(
                                        )
                                      )
 
+                                   ,
+
+                                   # ── Replicate QC sub-tab ─────────────────────────────────
+                                   tabPanel("Replicate QC",
+                                     br(),
+                                     div(style = "padding: 0 10px;",
+                                       h4("Replicate Quality Control", style = "margin-top:0;"),
+                                       p(style = "font-size:.85em;color:#888;",
+                                         "Review coefficient of variation (CV%) per sample across time, ",
+                                         "flag outlier replicates (> threshold SD from mean), and exclude ",
+                                         "individual replicates before analysis."),
+                                       fluidRow(
+                                         column(3,
+                                           numericInput("qc_outlier_sd", "Outlier threshold (SD):",
+                                                        value = 2, min = 1, max = 5, step = 0.5)),
+                                         column(3,
+                                           numericInput("qc_cv_warn", "CV% warning level:",
+                                                        value = 20, min = 5, max = 100, step = 5)),
+                                         column(3,
+                                           actionButton("qc_run", tagList(icon("search"), " Run QC"),
+                                                        style = "margin-top:25px;background:#2C3E50;color:white;border:none;width:100%;"))
+                                       ),
+                                       br(),
+                                       uiOutput("qc_status"),
+                                       br(),
+                                       h5("CV% Summary (per sample)"),
+                                       DT::DTOutput("qc_cv_table"),
+                                       br(),
+                                       h5("Flagged Outlier Time Points"),
+                                       DT::DTOutput("qc_outlier_table"),
+                                       br(),
+                                       h5("Exclude Replicates"),
+                                       p(style="font-size:.82em;color:#888;",
+                                         "Select replicates to exclude from plotting and metrics. ",
+                                         "Click Apply to take effect."),
+                                       uiOutput("qc_exclude_ui"),
+                                       br(),
+                                       fluidRow(
+                                         column(3,
+                                           actionButton("qc_exclude_apply",
+                                                        tagList(icon("filter"), " Apply Exclusions"),
+                                                        style = "background:#27ae60;color:white;border:none;width:100%;font-weight:600;")),
+                                         column(3,
+                                           actionButton("qc_exclude_reset",
+                                                        tagList(icon("undo"), " Restore All Replicates"),
+                                                        style = "background:#c0392b;color:white;border:none;width:100%;"))
+                                       ),
+                                       br(),
+                                       uiOutput("qc_exclude_status")
+                                     )
+                                   ) # end Replicate QC
+
                                    ) # end tabsetPanel
                           ), # end Analysis tabPanel
 
@@ -1671,8 +1756,296 @@ ui <- fluidPage(
                                 )
                               ) # end right column
                             ) # end fluidRow
-                          ) # end Experiment Notes tabPanel
-              )
+                          ), # end Experiment Notes tabPanel
+
+              # ── Tab 4: Data ──────────────────────────────────────────────────────
+              tabPanel("Data", value = "data_tab",
+                br(),
+                tabsetPanel(id = "data_subtabs", type = "tabs",
+
+                  # ── Sub-tab 1: View & Edit ─────────────────────────────────────
+                  tabPanel("View & Edit",
+                    br(),
+                    div(style = "padding: 0 15px;",
+                      h4("Raw Data", style = "margin-top:0;"),
+                      p(style = "font-size:.85em;color:#888;",
+                        "Double-click any cell to edit it inline. Changes update the active dataset immediately (plots and metrics reflect edits in real time). Upload a file first, or use the Data Entry tab to create data from scratch."),
+                      fluidRow(
+                        column(4,
+                          downloadButton("download_current_data_csv",
+                                         "Download Current Data as CSV",
+                                         style = "width:100%;background:#2C3E50;color:white;border:none;")),
+                        column(4,
+                          actionButton("data_edit_reset",
+                                       tagList(icon("undo"), " Revert to Uploaded File"),
+                                       style = "width:100%;background:#c0392b;color:white;border:none;"))
+                      ),
+                      br(),
+                      uiOutput("data_edit_status"),
+                      DT::DTOutput("data_view_table")
+                    )
+                  ), # end View & Edit
+
+                  # ── Sub-tab 2: Data Entry ──────────────────────────────────────
+                  tabPanel("Data Entry",
+                    br(),
+                    div(style = "padding: 0 15px;",
+                      h4("Enter or Paste Data", style = "margin-top:0;"),
+                      p(style = "font-size:.85em;color:#888;",
+                        "Build a dataset from scratch or paste from Excel. When ready, click ",
+                        tags$strong("Use This Data as Active Dataset"), " to load it into the app."),
+
+                      # ── Option A: Spreadsheet grid ───────────────────────────
+                      tags$details(
+                        tags$summary(style = "font-weight:600;cursor:pointer;margin-bottom:6px;",
+                                     "Option A: Spreadsheet Grid (paste from Excel with Ctrl+V)"),
+                        div(style = "margin-top:8px;",
+                          if (has_rhandsontable) {
+                            tagList(
+                              p(style = "font-size:.82em;color:#888;",
+                                "First row = column headers. First column = time (e.g. 'Time'). ",
+                                "Paste from Excel directly into the grid using Ctrl+V."),
+                              fluidRow(
+                                column(3,
+                                  numericInput("entry_nrow", "Rows:", value = 20, min = 1, max = 2000, step = 1)),
+                                column(3,
+                                  numericInput("entry_ncol", "Columns:", value = 6, min = 2, max = 100, step = 1)),
+                                column(3,
+                                  actionButton("entry_resize_grid", "Resize Grid",
+                                               style = "margin-top:25px;background:#2C3E50;color:white;border:none;width:100%;"))
+                              ),
+                              br(),
+                              rhandsontable::rHandsontableOutput("data_entry_hot"),
+                              br()
+                            )
+                          } else {
+                            p(style = "color:#c0392b;font-size:.85em;",
+                              icon("exclamation-triangle"),
+                              " The ", tags$code("rhandsontable"), " package is not installed. ",
+                              "Run ", tags$code('install.packages("rhandsontable")'),
+                              " in R and restart the app to enable the spreadsheet grid. Use Option B below in the meantime.")
+                          }
+                        )
+                      ),
+
+                      br(),
+
+                      # ── Option B: Paste text ────────────────────────────────
+                      tags$details(
+                        tags$summary(style = "font-weight:600;cursor:pointer;margin-bottom:6px;",
+                                     "Option B: Paste Text (CSV or Tab-Separated)"),
+                        div(style = "margin-top:8px;",
+                          p(style = "font-size:.82em;color:#888;",
+                            "Paste comma- or tab-separated data (with a header row) into the box below, then click Parse."),
+                          textAreaInput("data_entry_text",
+                                        label    = NULL,
+                                        value    = "",
+                                        placeholder = "time,SampleA,SampleB\n0,0.05,0.04\n10,0.12,0.09\n...",
+                                        rows     = 8,
+                                        width    = "100%"),
+                          fluidRow(
+                            column(4,
+                              selectInput("data_entry_sep", "Separator:",
+                                          choices  = c("Auto-detect" = "auto",
+                                                       "Tab"         = "tab",
+                                                       "Comma"       = "comma",
+                                                       "Semicolon"   = "semicolon"),
+                                          selected = "auto")),
+                            column(4,
+                              actionButton("data_entry_parse",
+                                           tagList(icon("table"), " Parse Text"),
+                                           style = "margin-top:25px;background:#2C3E50;color:white;border:none;width:100%;"))
+                          ),
+                          br(),
+                          uiOutput("data_entry_preview_ui")
+                        )
+                      ),
+
+                      br(),
+                      fluidRow(
+                        column(5,
+                          actionButton("data_entry_apply",
+                                       tagList(icon("check-circle"), " Use This Data as Active Dataset"),
+                                       style = "background:#27ae60;color:white;border:none;width:100%;font-weight:600;")),
+                        column(3,
+                          actionButton("data_entry_clear",
+                                       tagList(icon("trash"), " Clear"),
+                                       style = "background:#c0392b;color:white;border:none;width:100%;"))
+                      ),
+                      br(),
+                      uiOutput("data_entry_status")
+                    )
+                  ) # end Data Entry
+
+                  , # end Data Entry
+
+                  # ── Sub-tab 3: Rename Samples ──────────────────────────────────
+                  tabPanel("Rename Samples",
+                    br(),
+                    div(style = "padding: 0 15px;",
+                      h4("Rename / Relabel Samples", style = "margin-top:0;"),
+                      p(style = "font-size:.85em;color:#888;",
+                        "Enter new names for any samples. Changes update the plot legends, axis labels, ",
+                        "and analysis tables immediately. Optionally assign a group tag (e.g. 'treated', 'control') ",
+                        "used to colour or facet in downstream comparisons."),
+                      uiOutput("rename_ui"),
+                      br(),
+                      fluidRow(
+                        column(4,
+                          actionButton("rename_apply", tagList(icon("check-circle"), " Apply Renames"),
+                                       style = "background:#27ae60;color:white;border:none;width:100%;font-weight:600;")),
+                        column(4,
+                          actionButton("rename_reset", tagList(icon("undo"), " Reset to Original Names"),
+                                       style = "background:#c0392b;color:white;border:none;width:100%;"))
+                      ),
+                      br(),
+                      uiOutput("rename_status")
+                    )
+                  ) # end Rename Samples
+
+                ) # end data_subtabs
+              ), # end Data tabPanel
+
+              # ── Tab 5: Curve Fitting ────────────────────────────────────────────
+              tabPanel("Curve Fitting", value = "curve_fit_tab",
+                br(),
+                div(style = "padding: 0 15px;",
+                  h4("Growth Curve Fitting", style = "margin-top:0;"),
+                  p(style = "font-size:.85em;color:#888;",
+                    "Fit parametric growth models to each sample's mean curve. ",
+                    "Fitted curves are overlaid on the data. Parameters (A, k, t0, R²) are shown in the table."),
+                  fluidRow(
+                    column(3,
+                      selectInput("fit_model", "Model:",
+                                  choices = c("Logistic (3-param)"  = "logistic",
+                                              "Gompertz"            = "gompertz",
+                                              "Both"                = "both"),
+                                  selected = "logistic")),
+                    column(3,
+                      checkboxInput("fit_growth_only", "Fit growth phase only (up to max OD)",
+                                    value = TRUE)),
+                    column(3,
+                      actionButton("fit_run", tagList(icon("calculator"), " Fit Models"),
+                                   style = "margin-top:25px;background:#2C3E50;color:white;border:none;width:100%;"))
+                  ),
+                  br(),
+                  uiOutput("fit_status"),
+                  br(),
+                  fluidRow(
+                    column(8, plotOutput("fit_plot", height = "450px")),
+                    column(4,
+                      br(),
+                      h5("Export Fitted Plot"),
+                      fluidRow(
+                        column(6, selectInput("fit_export_fmt", "Format:",
+                                              choices = c("PNG","PDF","SVG","TIFF"),
+                                              selected = "PNG")),
+                        column(6, numericInput("fit_export_dpi", "DPI:", 300, 72, 1200))
+                      ),
+                      fluidRow(
+                        column(6, numericInput("fit_export_w", "Width (in):", 7, 2, 20)),
+                        column(6, numericInput("fit_export_h", "Height (in):", 5, 2, 16))
+                      ),
+                      downloadButton("fit_download_plot", "Download",
+                                     style = "width:100%;background:#2C3E50;color:white;border:none;")
+                    )
+                  ),
+                  br(),
+                  h5("Fitted Parameters"),
+                  DT::DTOutput("fit_params_table"),
+                  br(),
+                  downloadButton("fit_download_params", "Download Parameters as CSV",
+                                 style = "background:#2C3E50;color:white;border:none;")
+                )
+              ), # end Curve Fitting
+
+              # ── Tab 6: Compare Experiments ─────────────────────────────────────
+              tabPanel("Compare", value = "compare_tab",
+                br(),
+                div(style = "padding: 0 15px;",
+                  h4("Side-by-Side Experiment Comparison", style = "margin-top:0;"),
+                  p(style = "font-size:.85em;color:#888;",
+                    "Load a second CSV file to overlay or facet alongside the primary dataset. ",
+                    "Useful for comparing runs from different days or conditions."),
+                  fluidRow(
+                    column(4,
+                      fileInput("compare_file", "Second CSV file:",
+                                accept = c("text/csv", ".csv"))),
+                    column(3,
+                      selectInput("compare_mode", "Display mode:",
+                                  choices = c("Overlay on same axes"  = "overlay",
+                                              "Facet side by side"    = "facet"),
+                                  selected = "overlay")),
+                    column(3,
+                      textInput("compare_label_a", "Label for Dataset 1:", value = "Experiment 1")),
+                    column(2,
+                      textInput("compare_label_b", "Label for Dataset 2:", value = "Experiment 2"))
+                  ),
+                  uiOutput("compare_status"),
+                  br(),
+                  plotOutput("compare_plot", height = "480px"),
+                  br(),
+                  fluidRow(
+                    column(3,
+                      selectInput("compare_export_fmt", "Format:",
+                                  choices = c("PNG","PDF","SVG","TIFF"), selected = "PNG")),
+                    column(2,
+                      numericInput("compare_export_w", "Width (in):", 10, 3, 24)),
+                    column(2,
+                      numericInput("compare_export_h", "Height (in):", 5, 2, 16)),
+                    column(2,
+                      numericInput("compare_export_dpi", "DPI:", 300, 72, 1200)),
+                    column(3,
+                      br(),
+                      downloadButton("compare_download", "Download Plot",
+                                     style = "width:100%;background:#2C3E50;color:white;border:none;"))
+                  )
+                )
+              ), # end Compare
+
+              # ── Tab 7: Batch Export ────────────────────────────────────────────
+              tabPanel("Export", value = "export_tab",
+                br(),
+                div(style = "padding: 0 15px;",
+                  h4("Batch Export", style = "margin-top:0;"),
+                  p(style = "font-size:.85em;color:#888;",
+                    "Export all selected plots and data tables in one click as a ZIP archive."),
+                  fluidRow(
+                    column(3,
+                      selectInput("batch_fmt", "Image format:",
+                                  choices = c("PNG","PDF","SVG","TIFF"), selected = "PNG")),
+                    column(2,
+                      numericInput("batch_dpi",  "DPI:",         300, 72, 1200)),
+                    column(2,
+                      numericInput("batch_w",    "Width (in):",  7,   2,  24)),
+                    column(2,
+                      numericInput("batch_h",    "Height (in):", 5,   2,  16))
+                  ),
+                  br(),
+                  h5("Select what to export:"),
+                  fluidRow(
+                    column(3,
+                      checkboxInput("batch_main_plot",   "Main OD plot",          value = TRUE),
+                      checkboxInput("batch_deriv_plot",  "Derivative plot",       value = TRUE),
+                      checkboxInput("batch_annot_plot",  "Annotated curves",      value = TRUE)),
+                    column(3,
+                      checkboxInput("batch_pheno_heat",  "Phenotype heatmap",     value = TRUE),
+                      checkboxInput("batch_od_heat",     "OD-time heatmap",       value = TRUE),
+                      checkboxInput("batch_fit_plot",    "Curve fit plot",        value = FALSE)),
+                    column(3,
+                      checkboxInput("batch_metrics_csv", "Metrics table (CSV)",   value = TRUE),
+                      checkboxInput("batch_stats_csv",   "Stats table (CSV)",     value = TRUE),
+                      checkboxInput("batch_raw_csv",     "Raw data (CSV)",        value = TRUE))
+                  ),
+                  br(),
+                  downloadButton("batch_export_zip", tagList(icon("file-archive"), " Export as ZIP"),
+                                 style = "background:#27ae60;color:white;border:none;font-weight:600;font-size:1.05em;padding:10px 20px;"),
+                  br(), br(),
+                  uiOutput("batch_export_status")
+                )
+              ) # end Batch Export
+
+              ) # end main tabsetPanel (was closed by old line)
     )
   )
 )
@@ -1695,7 +2068,9 @@ server <- function(input, output, session) {
     all_timepoints    = NULL,
     imported_settings = NULL,
     settings_status   = NULL,
-    style_page        = 1L
+    style_page        = 1L,
+    data_original     = NULL,   # snapshot of uploaded data for Revert
+    entry_parsed      = NULL    # data.frame from textarea Option B parse
   )
   
   # ── Palette helpers ──────────────────────────────────────────────────────────
@@ -1829,35 +2204,23 @@ server <- function(input, output, session) {
     cols[sapply(data[cols], is.numeric)]
   }
   
-  observeEvent(input$file, {
-    req(input$file)
-    data <- tryCatch(
-      read.csv(input$file$datapath, stringsAsFactors = FALSE, check.names = FALSE),
-      error = function(e)
-        read.csv(input$file$datapath, stringsAsFactors = FALSE, check.names = TRUE)
-    )
-
-    # ── Sanitise raw CSV ──────────────────────────────────────────────────────
-    # 1. Drop phantom columns produced by trailing commas on every row
-    #    (e.g. "Time,A,B," creates an unnamed "" column — discard it)
+  # ── Helper: apply a data frame as the active dataset ─────────────────────────
+  # Used by both the file-upload observer and the Data Entry "Apply" button so
+  # that both paths run exactly the same detection and UI-update logic.
+  apply_data_to_rv <- function(data) {
+    # ── Sanitise ────────────────────────────────────────────────────────────
     blank_cols <- nchar(trimws(colnames(data))) == 0
     if (any(blank_cols)) data <- data[, !blank_cols, drop = FALSE]
 
-    # 2. Strip rows whose time value is not a finite number.
-    #    Catches: trailing empty rows (from Excel/CSV padding), stray "*" rows,
-    #    and any other non-numeric sentinel.  MUST run before infer_wide_replicates()
-    #    because that function counts rows to assign block/replicate IDs — if junk
-    #    rows are present it inflates the last block, and the ID vector then
-    #    mismatches after apply_time_filters() strips those rows later → crash.
     tc_guess <- grep("^(time|Time|TIME|t|T)$", colnames(data), value = TRUE)
     if (length(tc_guess) == 0) tc_guess <- colnames(data)[1]
     t_num_tmp <- suppressWarnings(as.numeric(as.character(data[[tc_guess[1]]])))
     data <- data[is.finite(t_num_tmp), , drop = FALSE]
-    # ─────────────────────────────────────────────────────────────────────────
 
+    # ── Format detection ────────────────────────────────────────────────────
     rv$is_long_format <- is_long_format_detect(data)
     rv$time_col       <- detect_time_column(data)
-    
+
     if (rv$is_long_format) {
       potential <- c("variable","Variable","condition","Condition","treatment","Treatment",
                      "sample","Sample","group","Group")
@@ -1869,24 +2232,26 @@ server <- function(input, output, session) {
       }
       vc <- detect_od_columns(data, c(rv$time_col, group_col))
       if (length(vc) > 1) vc <- vc[1]
-      rv$group_col   <- group_col
-      rv$value_col   <- vc
-      rv$rep_col     <- detect_replicate_column(data, rv$time_col, group_col, vc)
-      rv$od_vars     <- as.character(unique(data[[group_col]]))
-      rv$od_vars_raw <- rv$od_vars
+      rv$group_col      <- group_col
+      rv$value_col      <- vc
+      rv$rep_col        <- detect_replicate_column(data, rv$time_col, group_col, vc)
+      rv$od_vars        <- as.character(unique(data[[group_col]]))
+      rv$od_vars_raw    <- rv$od_vars
       rv$wide_block_id  <- NULL
       rv$wide_rep_count <- NULL
     } else {
       oc <- detect_od_columns(data, rv$time_col)
-      rv$od_vars     <- oc
-      rv$od_vars_raw <- oc
-      rv$rep_col     <- NULL
-      wide_rep <- infer_wide_replicates(data, rv$time_col)
+      rv$od_vars        <- oc
+      rv$od_vars_raw    <- oc
+      rv$rep_col        <- NULL
+      wide_rep          <- infer_wide_replicates(data, rv$time_col)
       rv$wide_block_id  <- wide_rep$block_id
       rv$wide_rep_count <- wide_rep$reps
     }
-    rv$data <- data
-    
+
+    rv$data          <- data
+    rv$data_original <- data   # snapshot for Revert
+
     tr <- range(suppressWarnings(as.numeric(as.character(data[[rv$time_col]]))), na.rm = TRUE)
     updateNumericInput(session, "x_min", value = tr[1])
     updateNumericInput(session, "x_max", value = tr[2])
@@ -1895,11 +2260,21 @@ server <- function(input, output, session) {
     all_t <- sort(unique(suppressWarnings(as.numeric(as.character(data[[rv$time_col]])))))
     rv$all_timepoints <- all_t[is.finite(all_t)]
     updateTextInput(session, "exclude_timepoints", value = "")
-    
+
     if (!is.null(input$color_palette) && input$color_palette != "custom")
       rv$palette_colors <- get_palette_colors(input$color_palette, length(rv$od_vars))
-    
+
     apply_imported_sample_aesthetics()
+  }
+
+  observeEvent(input$file, {
+    req(input$file)
+    data <- tryCatch(
+      read.csv(input$file$datapath, stringsAsFactors = FALSE, check.names = FALSE),
+      error = function(e)
+        read.csv(input$file$datapath, stringsAsFactors = FALSE, check.names = TRUE)
+    )
+    apply_data_to_rv(data)
   })
 
   # ── Select All / Deselect All for Plot tab sample selector ─────────────────
@@ -3027,6 +3402,24 @@ server <- function(input, output, session) {
                      plot.caption.position = "plot")
     }
 
+    # ── Threshold line ────────────────────────────────────────────────────────
+    if (isTRUE(input$enable_threshold) && !is.null(input$threshold_value)) {
+      thr_col <- if (!is.null(input$threshold_color) && input$threshold_color == "custom")
+        input$threshold_color_custom else input$threshold_color
+      thr_col <- if (is.null(thr_col) || nchar(thr_col) == 0) "#e74c3c" else thr_col
+      p <- p + geom_hline(yintercept = input$threshold_value,
+                          linetype   = input$threshold_linetype,
+                          color      = thr_col,
+                          linewidth  = input$threshold_linewidth)
+      lbl <- trimws(input$threshold_label)
+      if (nchar(lbl) > 0) {
+        x_rng <- range(plot_data$time, na.rm = TRUE)
+        p <- p + annotate("text", x = x_rng[2], y = input$threshold_value,
+                          label = lbl, hjust = 1.05, vjust = -0.4,
+                          color = thr_col, size = 3.5)
+      }
+    }
+
     p + coord_cartesian(clip = "off") +
       labs(x        = input$x_axis_label,
            y        = input$y_axis_label,
@@ -3851,6 +4244,452 @@ server <- function(input, output, session) {
     }
   )
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DATA TAB — server logic
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Grid dimension state (Data Entry Option A) ──────────────────────────────
+  rv_entry_dims <- reactiveValues(nrow = 20L, ncol = 6L)
+
+  observeEvent(input$entry_resize_grid, {
+    rv_entry_dims$nrow <- max(1L, as.integer(input$entry_nrow))
+    rv_entry_dims$ncol <- max(2L, as.integer(input$entry_ncol))
+  })
+
+  # ── View & Edit: editable DT ─────────────────────────────────────────────────
+  output$data_view_table <- DT::renderDT({
+    req(rv$data)
+    DT::datatable(
+      rv$data,
+      editable  = "cell",
+      rownames  = FALSE,
+      selection = "none",
+      options   = list(
+        scrollX    = TRUE,
+        scrollY    = "500px",
+        pageLength = 50,
+        dom        = "Bfrtip",
+        stateSave  = TRUE   # preserves page/scroll position across re-renders
+      ),
+      class = "compact stripe hover"
+    )
+  })
+
+  observeEvent(input$data_view_table_cell_edit, {
+    info  <- input$data_view_table_cell_edit
+    row_i <- info$row
+    col_i <- info$col + 1L   # DT sends 0-based col index when rownames=FALSE
+    d     <- isolate(rv$data)
+    col_class <- class(d[[col_i]])[1]
+    newval <- switch(col_class,
+      numeric = suppressWarnings(as.numeric(info$value)),
+      integer = suppressWarnings(as.integer(info$value)),
+      as.character(info$value)
+    )
+    if (is.numeric(newval) && is.na(newval))
+      showNotification("Non-numeric value stored as NA in a numeric column.",
+                       type = "warning", duration = 4)
+    d[row_i, col_i] <- newval
+    rv$data <- d
+    output$data_edit_status <- renderUI(
+      div(style = "color:#27ae60;font-weight:600;margin-bottom:8px;",
+          icon("check-circle"),
+          paste(" Row", row_i, "/ column '", colnames(d)[col_i], "' updated."))
+    )
+  })
+
+  # ── View & Edit: Revert ────────────────────────────────────────────────────
+  observeEvent(input$data_edit_reset, {
+    req(rv$data_original)
+    rv$data <- rv$data_original
+    output$data_edit_status <- renderUI(
+      div(style = "color:#e67e22;font-weight:600;margin-bottom:8px;",
+          icon("undo"), " Data reverted to the original uploaded file.")
+    )
+  })
+
+  # ── View & Edit: Download current data as CSV ──────────────────────────────
+  output$download_current_data_csv <- downloadHandler(
+    filename = function()
+      paste0("data_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".csv"),
+    content = function(file) {
+      req(rv$data)
+      write.csv(rv$data, file, row.names = FALSE)
+    }
+  )
+
+  # ── Data Entry: rhandsontable grid render (Option A) ────────────────────────
+  if (has_rhandsontable) {
+    output$data_entry_hot <- rhandsontable::renderRHandsontable({
+      nr <- rv_entry_dims$nrow
+      nc <- rv_entry_dims$ncol
+      df <- as.data.frame(
+        matrix("", nrow = nr, ncol = nc),
+        stringsAsFactors = FALSE
+      )
+      colnames(df) <- c("Time", paste0("Sample", seq_len(nc - 1L)))
+      rhandsontable::rhandsontable(
+        df,
+        useTypes   = FALSE,   # defer type coercion to Apply step
+        colHeaders = TRUE,
+        rowHeaders = FALSE,
+        height     = 420
+      )
+    })
+  }
+
+  # ── Data Entry: Textarea parse (Option B) ────────────────────────────────────
+  observeEvent(input$data_entry_parse, {
+    raw <- input$data_entry_text
+    req(nchar(trimws(raw)) > 0)
+
+    sep_choice <- input$data_entry_sep
+    sep <- if (sep_choice == "auto") {
+      first_line <- strsplit(raw, "\n")[[1]][1]
+      ntab  <- nchar(first_line) - nchar(gsub("\t", "", first_line, fixed = TRUE))
+      ncomm <- nchar(first_line) - nchar(gsub(",",  "", first_line, fixed = TRUE))
+      nsemi <- nchar(first_line) - nchar(gsub(";",  "", first_line, fixed = TRUE))
+      if (ntab >= ncomm && ntab >= nsemi) "\t"
+      else if (ncomm >= nsemi) ","
+      else ";"
+    } else {
+      switch(sep_choice, tab = "\t", comma = ",", semicolon = ";", "\t")
+    }
+
+    parsed <- tryCatch(
+      read.table(text = raw, header = TRUE, sep = sep,
+                 stringsAsFactors = FALSE, check.names = FALSE,
+                 fill = TRUE, quote = '"'),
+      error = function(e) NULL
+    )
+
+    if (is.null(parsed) || nrow(parsed) == 0) {
+      rv$entry_parsed <- NULL
+      output$data_entry_preview_ui <- renderUI(
+        div(style = "color:#c0392b;font-weight:600;",
+            icon("exclamation-triangle"),
+            " Could not parse the pasted text. Check the separator setting.")
+      )
+      return()
+    }
+
+    rv$entry_parsed <- parsed
+    output$data_entry_preview_ui <- renderUI({
+      tagList(
+        div(style = "color:#27ae60;font-weight:600;margin-bottom:6px;",
+            icon("check-circle"),
+            paste(" Parsed:", nrow(parsed), "rows ×", ncol(parsed),
+                  "columns. Preview (first 10 rows):")),
+        DT::renderDT(
+          DT::datatable(head(parsed, 10), rownames = FALSE,
+                        options = list(dom = "t", scrollX = TRUE)),
+          server = FALSE
+        )
+      )
+    })
+  })
+
+  # ── Data Entry: Apply button ────────────────────────────────────────────────
+  observeEvent(input$data_entry_apply, {
+    # Prefer textarea-parsed data; fall back to rhandsontable grid
+    use_data <- if (!is.null(rv$entry_parsed) && nrow(rv$entry_parsed) > 0) {
+      rv$entry_parsed
+    } else if (has_rhandsontable && !is.null(input$data_entry_hot)) {
+      tryCatch(rhandsontable::hot_to_r(input$data_entry_hot), error = function(e) NULL)
+    } else {
+      NULL
+    }
+
+    if (is.null(use_data) || nrow(use_data) == 0) {
+      output$data_entry_status <- renderUI(
+        div(style = "color:#c0392b;font-weight:600;",
+            icon("exclamation-triangle"),
+            " No data to apply. Enter data in the grid or paste + parse text first.")
+      )
+      return()
+    }
+
+    # Coerce columns: numeric where possible, character fallback
+    for (j in seq_along(use_data)) {
+      attempt <- suppressWarnings(as.numeric(as.character(use_data[[j]])))
+      if (sum(!is.na(attempt)) > 0)
+        use_data[[j]] <- attempt
+      else
+        use_data[[j]] <- as.character(use_data[[j]])
+    }
+
+    # Drop fully-empty rows (artefact of blank grid rows)
+    row_empty <- apply(use_data, 1, function(r)
+      all(is.na(r) | trimws(as.character(r)) == ""))
+    use_data <- use_data[!row_empty, , drop = FALSE]
+
+    if (nrow(use_data) == 0) {
+      output$data_entry_status <- renderUI(
+        div(style = "color:#c0392b;",
+            icon("exclamation-triangle"),
+            " All rows appear empty after parsing.")
+      )
+      return()
+    }
+
+    tryCatch({
+      apply_data_to_rv(use_data)
+      output$data_entry_status <- renderUI(
+        div(style = "color:#27ae60;font-weight:600;",
+            icon("check-circle"),
+            paste(" Dataset applied:", nrow(use_data), "rows ×",
+                  ncol(use_data), "columns. Switched to Plot tab."))
+      )
+      updateTabsetPanel(session, "main_tabs", selected = "plot_tab")
+    }, error = function(e) {
+      output$data_entry_status <- renderUI(
+        div(style = "color:#c0392b;font-weight:600;",
+            icon("exclamation-triangle"),
+            paste(" Error applying data:", e$message))
+      )
+    })
+  })
+
+  # ── Data Entry: Clear ────────────────────────────────────────────────────────
+  observeEvent(input$data_entry_clear, {
+    rv$entry_parsed <- NULL
+    output$data_entry_status    <- renderUI(NULL)
+    output$data_entry_preview_ui <- renderUI(NULL)
+    # Re-trigger grid render by nudging dimensions
+    isolate({
+      rv_entry_dims$nrow <- rv_entry_dims$nrow
+    })
+  })
+
+  # ── Sample Renaming ──────────────────────────────────────────────────────────
+  # Store a named mapping: original name → display name, and optional group tag
+  rv_rename <- reactiveValues(
+    name_map  = NULL,   # named character vector: original → display
+    group_map = NULL    # named character vector: original → group tag
+  )
+
+  # Render rename UI rows dynamically when samples change
+  output$rename_ui <- renderUI({
+    req(rv$od_vars_raw)
+    orig_names <- rv$od_vars_raw
+    nm  <- isolate(rv_rename$name_map)
+    gm  <- isolate(rv_rename$group_map)
+    rows <- lapply(seq_along(orig_names), function(i) {
+      on <- orig_names[i]
+      sid <- safe_id(on)
+      cur_name  <- if (!is.null(nm)  && on %in% names(nm))  nm[on]  else on
+      cur_group <- if (!is.null(gm)  && on %in% names(gm))  gm[on]  else ""
+      fluidRow(style = "margin-bottom:4px;",
+        column(1, p(style = "padding-top:7px;font-size:.75em;color:#aaa;", i)),
+        column(4, textInput(paste0("rename_new_", sid), label = NULL,
+                            value = cur_name, placeholder = on)),
+        column(3, textInput(paste0("rename_grp_", sid), label = NULL,
+                            value = cur_group, placeholder = "Group (optional)"))
+      )
+    })
+    tagList(
+      fluidRow(
+        column(1),
+        column(4, tags$b("Display Name")),
+        column(3, tags$b("Group Tag"))
+      ),
+      rows
+    )
+  })
+
+  observeEvent(input$rename_apply, {
+    req(rv$od_vars_raw)
+    orig_names <- rv$od_vars_raw
+    nm  <- setNames(character(length(orig_names)), orig_names)
+    gm  <- setNames(character(length(orig_names)), orig_names)
+    for (on in orig_names) {
+      sid <- safe_id(on)
+      new_n <- input[[paste0("rename_new_", sid)]]
+      grp   <- input[[paste0("rename_grp_", sid)]]
+      nm[on] <- if (!is.null(new_n) && nchar(trimws(new_n)) > 0) trimws(new_n) else on
+      gm[on] <- if (!is.null(grp))  trimws(grp) else ""
+    }
+    rv_rename$name_map  <- nm
+    rv_rename$group_map <- gm
+    # Apply names to the data and od_vars
+    if (!is.null(rv$data)) {
+      d <- rv$data
+      if (!rv$is_long_format) {
+        # Wide: rename column headers
+        for (on in orig_names) {
+          col_idx <- which(colnames(d) == on)
+          if (length(col_idx)) colnames(d)[col_idx] <- nm[on]
+        }
+        rv$od_vars <- unname(nm[orig_names])
+      } else {
+        # Long: rename values in group column
+        d[[rv$group_col]] <- nm[as.character(d[[rv$group_col]])]
+        rv$od_vars <- unname(nm[orig_names])
+      }
+      rv$data <- d
+      updateSelectInput(session, "selected_samples",
+                        choices  = rv$od_vars,
+                        selected = rv$od_vars)
+    }
+    output$rename_status <- renderUI(
+      div(style = "color:#27ae60;font-weight:600;",
+          icon("check-circle"), " Names updated. Switch to the Plot tab to see changes.")
+    )
+  })
+
+  observeEvent(input$rename_reset, {
+    req(rv$od_vars_raw)
+    # Revert data to original column names
+    if (!is.null(rv$data) && !is.null(rv_rename$name_map)) {
+      d  <- rv$data
+      nm <- rv_rename$name_map
+      if (!rv$is_long_format) {
+        for (on in names(nm)) {
+          col_idx <- which(colnames(d) == nm[on])
+          if (length(col_idx)) colnames(d)[col_idx] <- on
+        }
+      } else {
+        inv <- setNames(names(nm), nm)
+        d[[rv$group_col]] <- inv[as.character(d[[rv$group_col]])]
+      }
+      rv$data    <- d
+      rv$od_vars <- rv$od_vars_raw
+      updateSelectInput(session, "selected_samples",
+                        choices  = rv$od_vars_raw,
+                        selected = rv$od_vars_raw)
+    }
+    rv_rename$name_map  <- NULL
+    rv_rename$group_map <- NULL
+    output$rename_status <- renderUI(
+      div(style = "color:#e67e22;font-weight:600;",
+          icon("undo"), " Names reset to original.")
+    )
+  })
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # END DATA TAB server logic
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REPLICATE QC — server logic
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  rv_qc <- reactiveValues(
+    cv_table      = NULL,
+    outlier_table = NULL,
+    excluded_reps = character(0)  # replicate IDs to exclude (wide: block_ids; long: rep values)
+  )
+
+  observeEvent(input$qc_run, {
+    req(rv$data, rv$od_vars)
+    pd <- prepare_plot_data(rv$od_vars)
+    if (is.null(pd) || nrow(pd) == 0) {
+      output$qc_status <- renderUI(
+        div(style="color:#c0392b;", icon("exclamation-triangle"),
+            " No data available. Upload a file first."))
+      return()
+    }
+
+    sd_thr <- if (!is.null(input$qc_outlier_sd)) input$qc_outlier_sd else 2
+    cv_warn <- if (!is.null(input$qc_cv_warn)) input$qc_cv_warn else 20
+
+    # CV per sample (across all timepoints, using sd_value / mean_value)
+    cv_smry <- pd %>%
+      dplyr::group_by(variable) %>%
+      dplyr::summarise(
+        mean_OD  = round(mean(mean_value, na.rm = TRUE), 4),
+        sd_OD    = round(mean(sd_value,   na.rm = TRUE), 4),
+        CV_pct   = round(mean(sd_value / pmax(mean_value, 1e-9), na.rm = TRUE) * 100, 2),
+        n_timepoints = dplyr::n(),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        Flag = ifelse(CV_pct >= cv_warn, "⚠ High CV", "OK")
+      )
+    rv_qc$cv_table <- cv_smry
+
+    # Outlier timepoints: per sample × time, flag if abs(sd) > sd_thr * global sd
+    outliers <- pd %>%
+      dplyr::filter(!is.na(sd_value) & sd_value > 0) %>%
+      dplyr::group_by(variable) %>%
+      dplyr::mutate(
+        global_sd  = mean(sd_value, na.rm = TRUE),
+        is_outlier = sd_value > sd_thr * global_sd
+      ) %>%
+      dplyr::filter(is_outlier) %>%
+      dplyr::select(Sample = variable, Time = time,
+                    Mean_OD = mean_value, SD = sd_value) %>%
+      dplyr::mutate(across(where(is.numeric), ~round(.x, 4))) %>%
+      dplyr::ungroup()
+    rv_qc$outlier_table <- outliers
+
+    output$qc_status <- renderUI(
+      div(style = "color:#27ae60;font-weight:600;",
+          icon("check-circle"),
+          paste(" QC complete.", nrow(cv_smry), "samples reviewed.",
+                nrow(outliers), "outlier timepoints flagged."))
+    )
+  })
+
+  output$qc_cv_table <- DT::renderDT({
+    req(rv_qc$cv_table)
+    DT::datatable(rv_qc$cv_table, rownames = FALSE,
+      options = list(scrollX = TRUE, pageLength = 25, dom = "frtip"),
+      class = "compact stripe hover") %>%
+      DT::formatStyle("Flag",
+        backgroundColor = DT::styleEqual("⚠ High CV", "#fff3cd"),
+        fontWeight      = DT::styleEqual("⚠ High CV", "bold"))
+  })
+
+  output$qc_outlier_table <- DT::renderDT({
+    req(rv_qc$outlier_table)
+    DT::datatable(rv_qc$outlier_table, rownames = FALSE,
+      options = list(scrollX = TRUE, pageLength = 25, dom = "frtip"),
+      class = "compact stripe hover")
+  })
+
+  # Replicate exclusion UI — only meaningful if we have replicate information
+  output$qc_exclude_ui <- renderUI({
+    req(rv$data)
+    if (rv$is_long_format && !is.null(rv$rep_col)) {
+      reps <- sort(unique(as.character(rv$data[[rv$rep_col]])))
+      checkboxGroupInput("qc_exclude_reps", "Exclude replicate IDs:",
+                         choices = reps, inline = TRUE)
+    } else if (!rv$is_long_format && !is.null(rv$wide_block_id)) {
+      n_reps <- if (!is.null(rv$wide_rep_count)) rv$wide_rep_count else 1L
+      reps   <- as.character(seq_len(n_reps))
+      checkboxGroupInput("qc_exclude_reps", "Exclude replicate block numbers:",
+                         choices = reps, inline = TRUE)
+    } else {
+      p(style="color:#888;font-size:.85em;",
+        "No replicate information detected. Exclusion requires multi-replicate data.")
+    }
+  })
+
+  observeEvent(input$qc_exclude_apply, {
+    rv_qc$excluded_reps <- if (!is.null(input$qc_exclude_reps))
+      input$qc_exclude_reps else character(0)
+    output$qc_exclude_status <- renderUI(
+      div(style = "color:#27ae60;font-weight:600;",
+          icon("check-circle"),
+          paste(" Excluding replicates:", paste(rv_qc$excluded_reps, collapse = ", "),
+                "— re-run metrics and plots to reflect changes."))
+    )
+  })
+
+  observeEvent(input$qc_exclude_reset, {
+    rv_qc$excluded_reps <- character(0)
+    updateCheckboxGroupInput(session, "qc_exclude_reps", selected = character(0))
+    output$qc_exclude_status <- renderUI(
+      div(style = "color:#e67e22;font-weight:600;",
+          icon("undo"), " All replicates restored.")
+    )
+  })
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # END REPLICATE QC server logic
+  # ═══════════════════════════════════════════════════════════════════════════
+
   rv_analysis <- reactiveValues(
     metrics        = NULL,
     metrics_raw    = NULL,
@@ -4543,5 +5382,365 @@ server <- function(input, output, session) {
     }
   )
   
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CURVE FITTING — server logic
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  rv_fit <- reactiveValues(
+    fit_results = NULL,   # data.frame of parameters per sample × model
+    fit_curves  = NULL    # data.frame of predicted OD for overlay plotting
+  )
+
+  # Fit a single model to one sample's data; returns list(params, pred)
+  fit_one_model <- function(t, y, model, growth_only = TRUE) {
+    if (growth_only) {
+      peak_i <- which.max(y)
+      t <- t[seq_len(peak_i)]
+      y <- y[seq_len(peak_i)]
+    }
+    if (length(t) < 4) return(NULL)
+    A_init  <- max(y, na.rm = TRUE)
+    k_init  <- 0.1
+    t0_init <- t[which.min(abs(y - A_init / 2))]
+    t0_init <- if (is.na(t0_init) || length(t0_init) == 0) mean(t) else t0_init
+
+    fit <- tryCatch({
+      if (model == "logistic") {
+        nls(y ~ A / (1 + exp(-k * (t - t0))),
+            start = list(A = A_init, k = k_init, t0 = t0_init),
+            control = nls.control(maxiter = 200, warnOnly = TRUE))
+      } else {  # gompertz
+        nls(y ~ A * exp(-exp(-k * (t - t0))),
+            start = list(A = A_init, k = k_init, t0 = t0_init),
+            control = nls.control(maxiter = 200, warnOnly = TRUE))
+      }
+    }, error = function(e) NULL)
+    if (is.null(fit)) return(NULL)
+    cf <- coef(fit)
+    r2 <- 1 - sum(residuals(fit)^2) / sum((y - mean(y))^2)
+    t_pred  <- seq(min(t), max(t), length.out = 200)
+    y_pred  <- predict(fit, newdata = list(t = t_pred))
+    list(
+      params = data.frame(A = cf["A"], k = cf["k"], t0 = cf["t0"], R2 = round(r2, 4)),
+      pred   = data.frame(time = t_pred, pred_OD = y_pred)
+    )
+  }
+
+  observeEvent(input$fit_run, {
+    req(rv$data, input$selected_samples)
+    pd      <- prepare_plot_data(input$selected_samples)
+    models  <- if (input$fit_model == "both") c("logistic","gompertz") else input$fit_model
+    g_only  <- isTRUE(input$fit_growth_only)
+    all_params <- list()
+    all_preds  <- list()
+
+    for (samp in input$selected_samples) {
+      sd <- pd %>% dplyr::filter(variable == samp) %>%
+        dplyr::arrange(time) %>%
+        dplyr::filter(!is.na(mean_value))
+      if (nrow(sd) < 4) next
+      for (mod in models) {
+        res <- fit_one_model(sd$time, sd$mean_value, mod, g_only)
+        if (is.null(res)) next
+        all_params[[length(all_params)+1]] <- dplyr::mutate(
+          res$params, Sample = samp, Model = mod)
+        all_preds[[length(all_preds)+1]] <- dplyr::mutate(
+          res$pred, variable = samp, model = mod)
+      }
+    }
+
+    if (length(all_params) == 0) {
+      output$fit_status <- renderUI(
+        div(style = "color:#c0392b;font-weight:600;",
+            icon("exclamation-triangle"),
+            " No models converged. Try uploading data with a clear growth phase."))
+      return()
+    }
+
+    rv_fit$fit_results <- dplyr::bind_rows(all_params) %>%
+      dplyr::select(Sample, Model, A, k, t0, R2) %>%
+      dplyr::mutate(across(where(is.numeric), ~round(.x, 4)))
+    rv_fit$fit_curves  <- dplyr::bind_rows(all_preds)
+
+    n_ok <- length(all_params)
+    output$fit_status <- renderUI(
+      div(style = "color:#27ae60;font-weight:600;",
+          icon("check-circle"),
+          paste(" Fitted", n_ok, "model(s) successfully.")))
+  })
+
+  build_fit_plot <- function() {
+    req(rv_fit$fit_curves, rv$data, input$selected_samples)
+    pd   <- prepare_plot_data(input$selected_samples)
+    aes  <- resolve_aesthetics(input$selected_samples)
+    cols <- setNames(aes$colors, aes$samples)
+
+    p <- ggplot() +
+      geom_line(data = pd,
+                aes(x = time, y = mean_value, color = variable),
+                linewidth = 1) +
+      geom_line(data = rv_fit$fit_curves,
+                aes(x = time, y = pred_OD, color = variable, linetype = model),
+                linewidth = 0.7, alpha = 0.85) +
+      scale_color_manual(values = cols, name = "Sample") +
+      scale_linetype_manual(values = c("logistic" = "dashed", "gompertz" = "dotted"),
+                            name = "Model") +
+      labs(x = "Time", y = "OD", title = "Observed (solid) vs Fitted (dashed/dotted)") +
+      theme_bw(base_size = 13) +
+      theme(legend.position = "right")
+    p
+  }
+
+  output$fit_plot <- renderPlot({
+    req(rv_fit$fit_curves)
+    build_fit_plot()
+  })
+
+  output$fit_params_table <- DT::renderDT({
+    req(rv_fit$fit_results)
+    DT::datatable(rv_fit$fit_results, rownames = FALSE,
+      options = list(scrollX = TRUE, pageLength = 25, dom = "frtip"),
+      class = "compact stripe hover")
+  })
+
+  output$fit_download_plot <- downloadHandler(
+    filename = function() paste0("curve_fit.", tolower(input$fit_export_fmt)),
+    content  = function(file) {
+      p <- build_fit_plot()
+      ggsave(file, plot = p, device = tolower(input$fit_export_fmt),
+             width = input$fit_export_w, height = input$fit_export_h,
+             dpi = input$fit_export_dpi)
+    }
+  )
+
+  output$fit_download_params <- downloadHandler(
+    filename = function() paste0("curve_fit_params_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".csv"),
+    content  = function(file) {
+      req(rv_fit$fit_results)
+      write.csv(rv_fit$fit_results, file, row.names = FALSE)
+    }
+  )
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COMPARE EXPERIMENTS — server logic
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  rv_compare <- reactiveValues(data_b = NULL, od_vars_b = NULL, time_col_b = NULL)
+
+  observeEvent(input$compare_file, {
+    req(input$compare_file)
+    data_b <- tryCatch(
+      read.csv(input$compare_file$datapath, stringsAsFactors = FALSE, check.names = FALSE),
+      error = function(e)
+        read.csv(input$compare_file$datapath, stringsAsFactors = FALSE, check.names = TRUE)
+    )
+    blank_cols <- nchar(trimws(colnames(data_b))) == 0
+    if (any(blank_cols)) data_b <- data_b[, !blank_cols, drop = FALSE]
+    tc <- grep("^(time|Time|TIME|t|T)$", colnames(data_b), value = TRUE)
+    if (length(tc) == 0) tc <- colnames(data_b)[1]
+    t_num <- suppressWarnings(as.numeric(as.character(data_b[[tc[1]]])))
+    data_b <- data_b[is.finite(t_num), , drop = FALSE]
+
+    rv_compare$time_col_b <- tc[1]
+    od_cols <- setdiff(colnames(data_b), tc[1])
+    od_cols <- od_cols[sapply(data_b[od_cols], function(x)
+      !all(is.na(suppressWarnings(as.numeric(as.character(x))))))]
+    rv_compare$od_vars_b <- od_cols
+    rv_compare$data_b    <- data_b
+    output$compare_status <- renderUI(
+      div(style = "color:#27ae60;font-weight:600;",
+          icon("check-circle"),
+          paste(" Loaded:", nrow(data_b), "rows,", length(od_cols), "samples."))
+    )
+  })
+
+  build_compare_plot <- function() {
+    req(rv$data, rv_compare$data_b, input$selected_samples)
+    label_a <- if (!is.null(input$compare_label_a) && nchar(input$compare_label_a) > 0)
+      input$compare_label_a else "Experiment 1"
+    label_b <- if (!is.null(input$compare_label_b) && nchar(input$compare_label_b) > 0)
+      input$compare_label_b else "Experiment 2"
+
+    # Prepare dataset A
+    pd_a <- prepare_plot_data(input$selected_samples) %>%
+      dplyr::mutate(dataset = label_a)
+
+    # Prepare dataset B (simple wide mean)
+    d_b  <- rv_compare$data_b
+    tc_b <- rv_compare$time_col_b
+    ov_b <- rv_compare$od_vars_b
+    long_b <- tidyr::pivot_longer(d_b, cols = tidyselect::all_of(ov_b),
+                                  names_to = "variable", values_to = "mean_value") %>%
+      dplyr::mutate(time = suppressWarnings(as.numeric(as.character(.data[[tc_b]])))) %>%
+      dplyr::filter(!is.na(time)) %>%
+      dplyr::select(time, variable, mean_value) %>%
+      dplyr::group_by(time, variable) %>%
+      dplyr::summarise(mean_value = mean(mean_value, na.rm = TRUE), .groups = "drop") %>%
+      dplyr::mutate(dataset = label_b, sd_value = NA_real_)
+
+    combined <- dplyr::bind_rows(
+      dplyr::select(pd_a, time, variable, mean_value, sd_value, dataset),
+      long_b
+    )
+
+    mode <- if (!is.null(input$compare_mode)) input$compare_mode else "overlay"
+
+    p <- ggplot(combined,
+                aes(x = time, y = mean_value, color = variable, linetype = dataset)) +
+      geom_line(linewidth = 0.9) +
+      labs(x = "Time", y = "OD", color = "Sample", linetype = "Dataset",
+           title = paste(label_a, "vs", label_b)) +
+      theme_bw(base_size = 13)
+
+    if (mode == "facet") {
+      p <- p + facet_wrap(~dataset, scales = "free_x") +
+        aes(linetype = NULL) + theme(legend.position = "bottom")
+    }
+    p
+  }
+
+  output$compare_plot <- renderPlot({
+    req(rv_compare$data_b)
+    tryCatch(build_compare_plot(),
+             error = function(e) ggplot() +
+               annotate("text", x=0.5, y=0.5, label=paste("Error:", e$message),
+                        color="red", size=4) + theme_void())
+  })
+
+  output$compare_download <- downloadHandler(
+    filename = function() paste0("compare.", tolower(input$compare_export_fmt)),
+    content  = function(file) {
+      p <- build_compare_plot()
+      ggsave(file, plot = p, device = tolower(input$compare_export_fmt),
+             width  = input$compare_export_w,
+             height = input$compare_export_h,
+             dpi    = input$compare_export_dpi)
+    }
+  )
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BATCH EXPORT — server logic
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  output$batch_export_zip <- downloadHandler(
+    filename = function()
+      paste0("lysis_export_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".zip"),
+    content = function(zip_file) {
+      tmp_dir <- tempfile()
+      dir.create(tmp_dir)
+      fmt    <- tolower(input$batch_fmt)
+      w      <- input$batch_w
+      h      <- input$batch_h
+      dpi_v  <- input$batch_dpi
+      files  <- character(0)
+
+      save_plot <- function(name, p) {
+        fp <- file.path(tmp_dir, paste0(name, ".", fmt))
+        tryCatch(ggsave(fp, plot = p, device = fmt, width = w, height = h, dpi = dpi_v),
+                 error = function(e) NULL)
+        if (file.exists(fp)) files <<- c(files, fp)
+      }
+
+      # 1. Main OD plot
+      if (isTRUE(input$batch_main_plot) && !is.null(rv$data)) {
+        tryCatch(save_plot("01_main_OD_plot", generate_plot()), error = function(e) NULL)
+      }
+
+      # 2. Derivative plot
+      if (isTRUE(input$batch_deriv_plot) && !is.null(rv_analysis$deriv_data)) {
+        tryCatch({
+          deriv_d <- rv_analysis$deriv_data
+          dp <- ggplot(deriv_d, aes(x = time, y = dODdt, color = variable)) +
+            geom_line(linewidth = 0.8) +
+            geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+            labs(x = "Time", y = "dOD/dt", title = "Rate of OD Change", color = "Sample") +
+            theme_bw(base_size = 13)
+          save_plot("02_derivative_plot", dp)
+        }, error = function(e) NULL)
+      }
+
+      # 3. Annotated curves
+      if (isTRUE(input$batch_annot_plot) && !is.null(rv_analysis$metrics_raw)) {
+        tryCatch({
+          ap <- build_annot_plot()
+          save_plot("03_annotated_curves", ap)
+        }, error = function(e) NULL)
+      }
+
+      # 4. Phenotype heatmap
+      if (isTRUE(input$batch_pheno_heat) && !is.null(rv_analysis$metrics)) {
+        tryCatch({
+          php <- build_heatmap()
+          phf <- file.path(tmp_dir, paste0("04_phenotype_heatmap.", fmt))
+          if (fmt == "pdf") {
+            pdf(phf, width = w, height = h)
+          } else {
+            grDevices::png(phf, width = w * dpi_v, height = h * dpi_v, res = dpi_v)
+          }
+          grid::grid.draw(php)
+          dev.off()
+          if (file.exists(phf)) files <- c(files, phf)
+        }, error = function(e) NULL)
+      }
+
+      # 5. OD time heatmap
+      if (isTRUE(input$batch_od_heat) && !is.null(rv$data)) {
+        tryCatch({
+          odp <- build_od_heatmap()
+          odf <- file.path(tmp_dir, paste0("05_OD_time_heatmap.", fmt))
+          if (fmt == "pdf") {
+            pdf(odf, width = w, height = h)
+          } else {
+            grDevices::png(odf, width = w * dpi_v, height = h * dpi_v, res = dpi_v)
+          }
+          grid::grid.draw(odp)
+          dev.off()
+          if (file.exists(odf)) files <- c(files, odf)
+        }, error = function(e) NULL)
+      }
+
+      # 6. Curve fit plot
+      if (isTRUE(input$batch_fit_plot) && !is.null(rv_fit$fit_curves)) {
+        tryCatch(save_plot("06_curve_fit", build_fit_plot()), error = function(e) NULL)
+      }
+
+      # 7. Metrics CSV
+      if (isTRUE(input$batch_metrics_csv) && !is.null(rv_analysis$metrics)) {
+        mf <- file.path(tmp_dir, "07_metrics.csv")
+        write.csv(rv_analysis$metrics, mf, row.names = FALSE)
+        files <- c(files, mf)
+      }
+
+      # 8. Stats CSV
+      if (isTRUE(input$batch_stats_csv) && !is.null(rv_analysis$stats_result)) {
+        sf <- file.path(tmp_dir, "08_stats.csv")
+        write.csv(rv_analysis$stats_result, sf, row.names = FALSE)
+        files <- c(files, sf)
+      }
+
+      # 9. Raw data CSV
+      if (isTRUE(input$batch_raw_csv) && !is.null(rv$data)) {
+        rf <- file.path(tmp_dir, "09_raw_data.csv")
+        write.csv(rv$data, rf, row.names = FALSE)
+        files <- c(files, rf)
+      }
+
+      if (length(files) == 0) {
+        # Write a placeholder so the zip is non-empty
+        nf <- file.path(tmp_dir, "README.txt")
+        writeLines("No outputs were generated — ensure data is loaded and metrics are calculated.", nf)
+        files <- nf
+      }
+
+      output$batch_export_status <- renderUI(
+        div(style = "color:#27ae60;font-weight:600;",
+            icon("check-circle"),
+            paste(" ZIP created with", length(files), "file(s)."))
+      )
+
+      utils::zip(zip_file, files = files, flags = "-j")
+    }
+  )
+
 }
 shinyApp(ui, server)

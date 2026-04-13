@@ -612,7 +612,7 @@
   <div class="stat-row">
     <div class="stat-badge"><span class="num">19</span><span class="lbl">Growth Metrics</span></div>
     <div class="stat-badge"><span class="num">7</span><span class="lbl">Variability Modes</span></div>
-    <div class="stat-badge"><span class="num">6+</span><span class="lbl">Export Formats</span></div>
+    <div class="stat-badge"><span class="num">7</span><span class="lbl">App Tabs</span></div>
     <div class="stat-badge"><span class="num">Free</span><span class="lbl">Open Source</span></div>
   </div>
 
@@ -696,6 +696,26 @@
       <h4>Export Everything</h4>
       <p>PDF, PNG, SVG, TIFF, JPEG, PPTX, and animated GIF. Notes in 6 formats.</p>
     </div>
+    <div class="feature-card">
+      <div class="icon">✏️</div>
+      <h4>Live Data Editing</h4>
+      <p>View and edit your raw data inline. Paste directly from Excel. No re-upload needed.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📈</div>
+      <h4>Curve Fitting</h4>
+      <p>Logistic and Gompertz model fitting with parameter table (A, k, t₀, R²) and overlay plot.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🔀</div>
+      <h4>Compare Experiments</h4>
+      <p>Overlay or facet two independent CSV datasets side-by-side for cross-run comparisons.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📦</div>
+      <h4>Batch Export ZIP</h4>
+      <p>One click exports every plot, heatmap, and table as a single ZIP archive.</p>
+    </div>
   </div>
 
   <h2>The Variability Display Modes</h2>
@@ -764,7 +784,7 @@
     flex-wrap: wrap;
   ">
     <div style="flex:1;min-width:200px;">
-      <div style="color:#6ee7b7;font-family:monospace;font-size:.8rem;letter-spacing:.08em;margin-bottom:6px;">LATEST RELEASE — v1.0.0</div>
+      <div style="color:#6ee7b7;font-family:monospace;font-size:.8rem;letter-spacing:.08em;margin-bottom:6px;">LATEST RELEASE — v2.0.0</div>
       <div style="color:#f8fafc;font-size:1.08rem;font-weight:700;font-family:sans-serif;">Lysis Curve App · Single R file</div>
       <div style="color:#94a3b8;font-size:.85rem;font-family:sans-serif;margin-top:3px;">No installation beyond R and a few packages.</div>
     </div>
@@ -810,6 +830,9 @@
   <span class="str">"shiny"</span>, <span class="str">"tidyverse"</span>, <span class="str">"ggpubr"</span>, <span class="str">"scales"</span>, <span class="str">"ggrepel"</span>,
   <span class="str">"ggprism"</span>, <span class="str">"svglite"</span>, <span class="str">"jsonlite"</span>, <span class="str">"zoo"</span>, <span class="str">"DT"</span>
 ))
+
+<span class="comment"># Optional — Excel-paste grid in Data Entry tab (v2.0+)</span>
+<span class="fn">install.packages</span>(<span class="str">"rhandsontable"</span>)
 
 <span class="comment"># Optional — PowerPoint export</span>
 <span class="fn">install.packages</span>(<span class="fn">c</span>(<span class="str">"officer"</span>, <span class="str">"rvg"</span>))
@@ -912,6 +935,13 @@
         <p>The app is free and available to anyone who measures bacterial growth curves. No subscription. No license. No waiting.</p>
       </div>
     </div>
+    <div class="tl-item">
+      <div class="tl-dot">6</div>
+      <div class="tl-content">
+        <h4>Recovery — v2.0</h4>
+        <p>Data editing, Excel paste, curve fitting, experiment comparison, replicate QC, threshold annotations, and batch ZIP export. Seven tabs. Still one R file.</p>
+      </div>
+    </div>
   </div>
 
   <h2>Why Not Just Use GraphPad or Excel?</h2>
@@ -935,6 +965,95 @@
     R, ggplot2, and a JSON settings file that restores your exact preferences
     next session. And it is completely free.
   </p>
+
+  <h2 id="v2">What's New in v2.0</h2>
+
+  <p>
+    After the initial release I kept running into the same friction points in my own
+    experiments — correcting a typo in a sample name meant re-exporting the CSV,
+    comparing two runs meant writing separate scripts, and getting all the plots into
+    one folder meant clicking download seven times. v2.0 fixes all of that.
+  </p>
+
+  <!-- v2 feature cards -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin:28px 0;">
+
+    <div style="background:#fff;border:1px solid #e5e0d8;border-top:3px solid #6d28d9;border-radius:10px;padding:22px 18px;box-shadow:0 1px 6px rgba(0,0,0,.045);">
+      <div style="font-size:1.6rem;margin-bottom:8px;">✏️</div>
+      <h4 style="font-size:.92rem;color:#6d28d9;margin-bottom:6px;font-family:sans-serif;font-weight:700;">Data Tab</h4>
+      <p style="font-size:.84rem;color:#64748b;margin:0;">View and inline-edit your raw data. Double-click any cell — changes hit the plot instantly. Paste from Excel, enter from scratch, rename samples, and download the working dataset as CSV.</p>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e5e0d8;border-top:3px solid #6d28d9;border-radius:10px;padding:22px 18px;box-shadow:0 1px 6px rgba(0,0,0,.045);">
+      <div style="font-size:1.6rem;margin-bottom:8px;">📈</div>
+      <h4 style="font-size:.92rem;color:#6d28d9;margin-bottom:6px;font-family:sans-serif;font-weight:700;">Curve Fitting</h4>
+      <p style="font-size:.84rem;color:#64748b;margin:0;">Fit Logistic or Gompertz models to each sample's growth phase. Overlay predicted curves on the data and get A, k, t₀, and R² in a downloadable table.</p>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e5e0d8;border-top:3px solid #6d28d9;border-radius:10px;padding:22px 18px;box-shadow:0 1px 6px rgba(0,0,0,.045);">
+      <div style="font-size:1.6rem;margin-bottom:8px;">🔀</div>
+      <h4 style="font-size:.92rem;color:#6d28d9;margin-bottom:6px;font-family:sans-serif;font-weight:700;">Compare Experiments</h4>
+      <p style="font-size:.84rem;color:#64748b;margin:0;">Load a second CSV and overlay or facet it alongside your primary dataset. Useful for day-to-day replication, different phage strains, or any two-experiment comparison.</p>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e5e0d8;border-top:3px solid #6d28d9;border-radius:10px;padding:22px 18px;box-shadow:0 1px 6px rgba(0,0,0,.045);">
+      <div style="font-size:1.6rem;margin-bottom:8px;">📦</div>
+      <h4 style="font-size:.92rem;color:#6d28d9;margin-bottom:6px;font-family:sans-serif;font-weight:700;">Batch Export</h4>
+      <p style="font-size:.84rem;color:#64748b;margin:0;">Check boxes for every output you want — main plot, derivative, heatmaps, fitted curves, metrics CSV, stats CSV, raw data — and download everything as a single ZIP. One click, nothing missed.</p>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e5e0d8;border-top:3px solid #6d28d9;border-radius:10px;padding:22px 18px;box-shadow:0 1px 6px rgba(0,0,0,.045);">
+      <div style="font-size:1.6rem;margin-bottom:8px;">🔍</div>
+      <h4 style="font-size:.92rem;color:#6d28d9;margin-bottom:6px;font-family:sans-serif;font-weight:700;">Replicate QC</h4>
+      <p style="font-size:.84rem;color:#64748b;margin:0;">CV% table per sample, outlier timepoints flagged by SD threshold, and per-replicate exclusion checkboxes — all before metrics are calculated.</p>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e5e0d8;border-top:3px solid #6d28d9;border-radius:10px;padding:22px 18px;box-shadow:0 1px 6px rgba(0,0,0,.045);">
+      <div style="font-size:1.6rem;margin-bottom:8px;">📏</div>
+      <h4 style="font-size:.92rem;color:#6d28d9;margin-bottom:6px;font-family:sans-serif;font-weight:700;">Threshold Line</h4>
+      <p style="font-size:.84rem;color:#64748b;margin:0;">Draw a labeled horizontal OD reference line on the main plot — useful for MIC thresholds, baseline OD, or any biological cutoff.</p>
+    </div>
+
+  </div>
+
+  <h3>Data Entry — no CSV required</h3>
+  <p>
+    The new Data tab has two ways to get data into the app without preparing a file first.
+    <strong>Option A</strong> is a spreadsheet grid (powered by
+    <code style="background:#e8e4f8;color:#6d28d9;padding:1px 5px;border-radius:3px;">rhandsontable</code>):
+    set the number of rows and columns, then paste directly from Excel with Ctrl+V.
+    <strong>Option B</strong> is a textarea — paste any comma- or tab-separated text, let the app
+    auto-detect the separator, preview the first ten rows, and click Apply.
+    Either way, clicking <em>Use This Data as Active Dataset</em> runs the same format-detection
+    pipeline as a file upload and switches straight to the Plot tab.
+  </p>
+
+  <h3>Curve fitting — what the parameters mean</h3>
+  <p>
+    The Logistic model fits: <strong>OD(t) = A / (1 + e<sup>−k(t − t₀)</sup>)</strong><br>
+    The Gompertz model fits: <strong>OD(t) = A · exp(−exp(−k(t − t₀)))</strong>
+  </p>
+  <p>
+    In both cases <strong>A</strong> is the asymptotic maximum OD (carrying capacity),
+    <strong>k</strong> is the growth rate constant (related to μmax), and
+    <strong>t₀</strong> is the inflection point — where growth rate is highest for the
+    logistic model, and roughly the time of maximum acceleration for Gompertz.
+    R² measures how well the model fits the mean curve. Both models are fitted using
+    R's built-in <code style="background:#e8e4f8;color:#6d28d9;padding:1px 5px;border-radius:3px;">nls()</code>
+    (nonlinear least squares). If convergence fails — which can happen with noisy data or
+    an unclear growth phase — the app skips that sample and reports which ones succeeded.
+  </p>
+
+  <h3>Step 5 — updated workflow</h3>
+  <ul style="margin: 0 0 16px 1.4em; color: var(--muted); font-size:.95rem; line-height:1.9;">
+    <li>Pick samples, set colors/shapes/line types in the <strong>Plot</strong> tab</li>
+    <li>Use the <strong>Threshold Line</strong> sidebar panel to add an OD reference line</li>
+    <li>Click <strong>Calculate Metrics</strong> in the <strong>Analysis</strong> tab; run <strong>Replicate QC</strong> to check data quality</li>
+    <li>Go to <strong>Curve Fitting</strong> to fit Logistic or Gompertz models</li>
+    <li>Use the <strong>Compare</strong> tab to load a second experiment</li>
+    <li>Hit <strong>Export → Export as ZIP</strong> to grab everything at once</li>
+    <li>Fill in the <strong>Experiment Notes</strong> tab and click <strong>Save Settings</strong> for full session persistence</li>
+  </ul>
 
   <!-- Lysis curve SVG divider -->
   <div class="curve-divider" aria-hidden="true">

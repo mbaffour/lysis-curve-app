@@ -24,10 +24,14 @@
   - [Fixed Graph Dimensions](#fixed-graph-dimensions)
   - [Experiment Notes](#experiment-notes)
   - [Analysis Tab](#analysis-tab)
+  - [Data Tab](#data-tab)
+  - [Curve Fitting Tab](#curve-fitting-tab)
+  - [Compare Tab](#compare-tab)
+  - [Export Tab](#export-tab)
   - [Save & Load Settings](#save--load-settings)
-  - [Export Options](#export-options)
 - [All 19 Growth Metrics](#all-19-growth-metrics)
 - [Statistical Methods](#statistical-methods)
+- [Changelog](#changelog)
 - [Troubleshooting](#troubleshooting)
 - [Contributing / Suggesting Changes](#contributing--suggesting-changes)
 - [Citation and Contact](#citation-and-contact)
@@ -47,6 +51,12 @@ The Lysis Curve OD Visualization App is a self-contained R Shiny application tha
 5. Exports figures, tables, and statistics in 6+ formats (PDF, PNG, SVG, TIFF, JPEG, PPTX, GIF).
 6. Keeps a full **Experiment Notes** record exportable as TXT, CSV, PDF, HTML, JSON, or an image (PNG).
 7. Saves and restores complete session state — plot settings, sample styles, and experiment notes — via a JSON settings file.
+8. **Data tab** — view, inline-edit, and download the working dataset; enter data manually or paste directly from Excel.
+9. **Curve Fitting** — fits Logistic and Gompertz growth models, overlays predictions, and reports A, k, t₀, and R².
+10. **Compare tab** — overlay or facet two independent CSV experiments side-by-side.
+11. **Batch Export** — one-click ZIP of all plots, heatmaps, and tables in your chosen format and DPI.
+12. **Replicate QC** — CV% summary, outlier flagging, and per-replicate exclusion before analysis.
+13. **Threshold annotation** — draw a labeled horizontal OD reference line on the main plot.
 
 ### Who it is for
 
@@ -75,6 +85,9 @@ install.packages(c(
   "ggprism", "svglite", "jsonlite", "zoo", "DT"
 ))
 
+# Optional — Excel-paste grid in Data Entry tab
+install.packages("rhandsontable")
+
 # Optional — PowerPoint export
 install.packages(c("officer", "rvg"))
 
@@ -94,6 +107,7 @@ install.packages("gifski")
 | `jsonlite` | JSON for Save/Load Settings |
 | `zoo` | Rolling window functions for metric calculation |
 | `DT` | Interactive data tables |
+| `rhandsontable` | Excel-paste spreadsheet grid in Data Entry *(optional)* |
 | `officer` | PowerPoint generation *(optional)* |
 | `rvg` | Vector graphics in PowerPoint *(optional)* |
 | `gifski` | Animated GIF encoding *(optional)* |
@@ -219,6 +233,45 @@ After uploading data and computing metrics, the Analysis tab provides:
 - **Annotated growth curves** — lag, peak OD, and lysis time marked on the main curve
 - **Phenotype heatmap** — Z-score normalized matrix across all metrics and samples
 - **OD-over-time heatmap** — time × sample color map for spotting temporal patterns
+- **Replicate QC** — CV% summary, outlier flagging by SD threshold, per-replicate exclusion checkboxes
+
+### Data Tab
+
+- **View & Edit** — full interactive table of the loaded dataset; double-click any cell to edit inline; changes propagate immediately to plots and metrics
+- **Revert** — restore the original uploaded file at any point
+- **Download Current Data** — export the working dataset (including any edits) as CSV
+- **Data Entry** — two ways to enter data without a CSV file:
+  - *Option A:* Excel-paste grid (requires `rhandsontable`) — resize, paste with Ctrl+V, click Apply
+  - *Option B:* Paste comma/tab/semicolon-separated text, auto-detect separator, preview, and apply
+- **Rename Samples** — rename sample display labels and assign group tags without re-uploading; changes update legends and all downstream analysis
+
+### Curve Fitting Tab
+
+- Fit **Logistic** (3-parameter) and/or **Gompertz** growth models to each sample using nonlinear least squares (`nls`)
+- Option to restrict fitting to the growth phase only (up to max OD)
+- Interactive overlay plot: observed mean curve (solid) vs fitted prediction (dashed/dotted)
+- Parameters table: A (carrying capacity), k (growth rate), t₀ (inflection point), R²
+- Downloadable fitted plot and CSV of parameters
+
+### Compare Tab
+
+- Load a second CSV experiment alongside the primary dataset
+- Choose **Overlay** (same axes, linetype differentiates datasets) or **Facet** (side-by-side panels)
+- Customizable dataset labels
+- Downloadable comparison plot
+
+### Export Tab (Batch)
+
+- Select any combination of outputs: main plot, derivative plot, annotated curves, both heatmaps, curve fit plot, metrics CSV, stats CSV, raw data CSV
+- Set format (PNG/PDF/SVG/TIFF), DPI, and dimensions once — applied to all image outputs
+- Download a single **ZIP archive** with all selected files numbered and named
+
+### Threshold / Annotation Line
+
+A collapsible sidebar panel lets you draw a labeled horizontal OD reference line on the main plot:
+- Set the OD value, color, linetype, and line width
+- Optionally add a text label anchored to the right edge of the curve
+- Integrates with all export formats
 
 ### Save & Load Settings
 
@@ -237,10 +290,14 @@ Load the JSON on your next session to restore everything exactly. Sliders, check
 | Animated GIF | Frame-by-frame reveal of samples |
 | PowerPoint | Vector plot + optional notes slide |
 | Analysis plots | PDF, PNG, SVG per plot type |
-| Metrics table | CSV, Excel-compatible CSV |
+| Curve fit plot | PDF, PNG, SVG, TIFF |
+| Compare plot | PDF, PNG, SVG, TIFF |
+| Metrics table | CSV |
 | Statistics | CSV |
+| Curve fit parameters | CSV |
 | Notes | TXT, CSV, PDF, HTML, JSON, PNG |
 | Settings | JSON (save/restore full session) |
+| Batch ZIP | All of the above in one archive |
 
 ---
 
@@ -281,6 +338,33 @@ Statistics are computed in the Analysis tab after selecting a reference sample:
 
 ---
 
+## Changelog
+
+### v2.0.0 — 2026-04-13
+
+**New tabs:**
+- **Data tab** — inline cell editing, revert to upload, CSV download, manual data entry (Excel-paste grid + textarea parse), sample renaming with group tags
+- **Curve Fitting tab** — Logistic and Gompertz `nls` fitting, overlay plot, parameters table (A, k, t₀, R²)
+- **Compare tab** — overlay or facet two independent CSV experiments
+- **Export tab** — batch ZIP of all plots and tables with unified format/DPI controls
+
+**New Analysis sub-tab:**
+- **Replicate QC** — CV% table, outlier flagging, per-replicate exclusion
+
+**Sidebar addition:**
+- **Threshold / Annotation Line** — labeled horizontal OD reference line on the main plot
+
+**Optional new dependency:**
+- `rhandsontable` — Excel-paste grid in Data Entry (app works without it)
+
+---
+
+### v1.0.0 — 2026-03-13
+
+- Initial release
+
+---
+
 ## Troubleshooting
 
 | Problem | Likely cause | Fix |
@@ -291,6 +375,9 @@ Statistics are computed in the Analysis tab after selecting a reference sample:
 | Metrics tab empty | Metrics not calculated | Click **Calculate Metrics** in the Analysis tab |
 | Plot panel shrinks with long names | Fixed-panel feature | Increase **Wrap labels at** slider in the Legend panel to wrap long names |
 | Settings file does not load | Wrong JSON structure | Only load files saved by this app |
+| Data Entry grid not visible | `rhandsontable` not installed | Run `install.packages("rhandsontable")` and restart the app |
+| Curve fit did not converge | Too few points or no growth phase | Try toggling **Fit growth phase only** or use a dataset with a clearer growth curve |
+| Batch ZIP is empty | No data or metrics loaded | Load data, calculate metrics, then export |
 
 ---
 
