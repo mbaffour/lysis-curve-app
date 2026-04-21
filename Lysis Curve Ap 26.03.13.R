@@ -808,6 +808,19 @@ ui <- fluidPage(
                                         p(style = "font-size:.82em;color:#666;", "Comma-separated values to remove (e.g. 0, 5, 180)."),
                                         textInput("exclude_timepoints", label = NULL, value = "", placeholder = "e.g. 0, 5, 180"),
                                         uiOutput("excluded_timepoints_preview")
+                       ),
+                       hr(style = "margin:12px 0 8px;"),
+                       h4("Per-Sample Time Filtering", class = "panel-title"),
+                       p(style = "font-size:.85em;color:#555;",
+                         "Set an independent time window for each sample. Applied on top of the global filter above."),
+                       checkboxInput("enable_sample_time_filter", "Enable per-sample time ranges", value = FALSE),
+                       conditionalPanel(condition = "input.enable_sample_time_filter == true",
+                         p(style = "font-size:.82em;color:#888;margin-bottom:6px;",
+                           "Showing selected samples. Adjust min/max per row."),
+                         uiOutput("sample_time_filter_ui"),
+                         br(),
+                         actionButton("sample_filter_reset", tagList(icon("undo"), " Reset All to Full Range"),
+                                      style = "width:100%;background:#2C3E50;color:white;border:none;font-size:.85em;")
                        )
                    )
                  ),
@@ -2854,6 +2867,26 @@ server <- function(input, output, session) {
     d
   }
   
+  # ── Per-sample time filter (applied after long-format pivot) ─────────────────
+  # pd must already have columns: time (numeric), variable (character)
+  apply_sample_time_filters <- function(pd) {
+    if (!isTRUE(input$enable_sample_time_filter)) return(pd)
+    if (is.null(pd) || nrow(pd) == 0) return(pd)
+    samps <- as.character(unique(pd$variable))
+    rows_keep <- rep(TRUE, nrow(pd))
+    for (s in samps) {
+      sid   <- safe_id(s)
+      t_min <- input[[paste0("samp_t_min_", sid)]]
+      t_max <- input[[paste0("samp_t_max_", sid)]]
+      if (!is.null(t_min) && !is.null(t_max) && is.numeric(t_min) && is.numeric(t_max)) {
+        in_samp   <- pd$variable == s
+        out_range <- pd$time < t_min | pd$time > t_max
+        rows_keep[in_samp & out_range] <- FALSE
+      }
+    }
+    pd[rows_keep, , drop = FALSE]
+  }
+
   # ── Data prep ────────────────────────────────────────────────────────────────
   prepare_plot_data <- function(samples = NULL) {
     req(rv$data, rv$time_col, input$selected_samples)
@@ -2886,9 +2919,10 @@ server <- function(input, output, session) {
                sem_value  = sd_value / sqrt(n),
                ci95_value = qt(0.975, df = pmax(n - 1, 1)) * sem_value)
     }
-    pd %>% filter(is.finite(time) & is.finite(mean_value))
+    pd <- pd %>% filter(is.finite(time) & is.finite(mean_value))
+    apply_sample_time_filters(pd)
   }
-  
+
   prepare_metrics_data <- function(samples = NULL) {
     req(rv$data, rv$time_col, input$selected_samples)
     samps <- if (!is.null(samples)) samples else input$selected_samples
@@ -2923,7 +2957,8 @@ server <- function(input, output, session) {
         summarise(mean_value = mean(value, na.rm = TRUE), .groups = "drop") %>%
         rename(time = !!sym(rv$time_col))
     }
-    pd %>% filter(is.finite(time) & is.finite(mean_value))
+    pd <- pd %>% filter(is.finite(time) & is.finite(mean_value))
+    apply_sample_time_filters(pd)
   }
 
   # ── Replicate-level data (for spaghetti / jitter / quantile-band displays) ──
@@ -2960,7 +2995,8 @@ server <- function(input, output, session) {
         rename(time = !!sym(rv$time_col)) %>%
         select(time, variable, replicate, rep_value)
     }
-    pd %>% filter(is.finite(time) & is.finite(rep_value))
+    pd <- pd %>% filter(is.finite(time) & is.finite(rep_value))
+    apply_sample_time_filters(pd)
   }
 
   # ── Aesthetics resolver ──────────────────────────────────────────────────────
@@ -4689,6 +4725,50 @@ server <- function(input, output, session) {
   # ═══════════════════════════════════════════════════════════════════════════
   # END REPLICATE QC server logic
   # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Per-sample time filter UI ─────────────────────────────────────────────
+  output$sample_time_filter_ui <- renderUI({
+    req(rv$all_timepoints, input$selected_samples)
+    t_min_global <- min(rv$all_timepoints, na.rm = TRUE)
+    t_max_global <- max(rv$all_timepoints, na.rm = TRUE)
+    samps <- input$selected_samples
+
+    rows <- lapply(samps, function(s) {
+      sid <- safe_id(s)
+      # Initialise to current input value if already set, otherwise global range
+      cur_min <- isolate(input[[paste0("samp_t_min_", sid)]])
+      cur_max <- isolate(input[[paste0("samp_t_max_", sid)]])
+      v_min <- if (!is.null(cur_min) && is.numeric(cur_min)) cur_min else t_min_global
+      v_max <- if (!is.null(cur_max) && is.numeric(cur_max)) cur_max else t_max_global
+
+      div(style = "background:#f8f8f8;border:1px solid #e0e0e0;border-radius:6px;padding:8px 10px;margin-bottom:6px;",
+        tags$b(s, style = "font-size:.85em;color:#333;display:block;margin-bottom:4px;"),
+        fluidRow(
+          column(6,
+            numericInput(paste0("samp_t_min_", sid), "From:",
+                         value = v_min, min = t_min_global, max = t_max_global,
+                         step  = if (t_max_global > 10) 1 else 0.1)),
+          column(6,
+            numericInput(paste0("samp_t_max_", sid), "To:",
+                         value = v_max, min = t_min_global, max = t_max_global,
+                         step  = if (t_max_global > 10) 1 else 0.1))
+        )
+      )
+    })
+    tagList(rows)
+  })
+
+  # Reset all per-sample ranges back to the global full range
+  observeEvent(input$sample_filter_reset, {
+    req(rv$all_timepoints, input$selected_samples)
+    t_min_global <- min(rv$all_timepoints, na.rm = TRUE)
+    t_max_global <- max(rv$all_timepoints, na.rm = TRUE)
+    for (s in input$selected_samples) {
+      sid <- safe_id(s)
+      updateNumericInput(session, paste0("samp_t_min_", sid), value = t_min_global)
+      updateNumericInput(session, paste0("samp_t_max_", sid), value = t_max_global)
+    }
+  })
 
   rv_analysis <- reactiveValues(
     metrics        = NULL,
