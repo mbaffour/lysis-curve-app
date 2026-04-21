@@ -273,6 +273,14 @@ A collapsible sidebar panel lets you draw a labeled horizontal OD reference line
 - Optionally add a text label anchored to the right edge of the curve
 - Integrates with all export formats
 
+### Per-Sample Time Filtering
+
+Located inside the **Time Point Filtering** sidebar panel. Enable per-sample ranges to give each sample its own independent time window:
+- One **From / To** row per currently selected sample, pre-filled with the global range
+- Works on top of the existing global time filter (global runs first, per-sample narrows further)
+- **Reset All to Full Range** button restores every sample at once
+- Affects plots, metrics, statistics, heatmaps, and all replicate display modes consistently
+
 ### Save & Load Settings
 
 Click **Save Settings** to download a JSON file that captures:
@@ -340,6 +348,13 @@ Statistics are computed in the Analysis tab after selecting a reference sample:
 
 ## Changelog
 
+### v2.1.0 — 2026-04-13
+
+**Sidebar addition:**
+- **Per-Sample Time Filtering** — independent From/To time window per sample inside the Time Point Filtering panel; stacks on top of the global filter; Reset All button; affects plots, metrics, stats, heatmaps, and all replicate modes
+
+---
+
 ### v2.0.0 — 2026-04-13
 
 **New tabs:**
@@ -351,7 +366,7 @@ Statistics are computed in the Analysis tab after selecting a reference sample:
 **New Analysis sub-tab:**
 - **Replicate QC** — CV% table, outlier flagging, per-replicate exclusion
 
-**Sidebar addition:**
+**Sidebar additions:**
 - **Threshold / Annotation Line** — labeled horizontal OD reference line on the main plot
 
 **Optional new dependency:**
@@ -378,6 +393,7 @@ Statistics are computed in the Analysis tab after selecting a reference sample:
 | Data Entry grid not visible | `rhandsontable` not installed | Run `install.packages("rhandsontable")` and restart the app |
 | Curve fit did not converge | Too few points or no growth phase | Try toggling **Fit growth phase only** or use a dataset with a clearer growth curve |
 | Batch ZIP is empty | No data or metrics loaded | Load data, calculate metrics, then export |
+| Per-sample filter has no effect | Checkbox not ticked | Enable **"Enable per-sample time ranges"** in the Time Point Filtering panel |
 
 ---
 
