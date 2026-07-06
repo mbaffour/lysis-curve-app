@@ -425,9 +425,12 @@ compare_metrics <- function(metrics_long, metric_name) {
   
   counts <- d %>% group_by(sample) %>% summarise(n = n(), .groups = "drop")
   if (any(counts$n < 2)) return(NULL)
-  
+
+  # Per-group replicate counts, for reporting n in the results table (publication requirement)
+  n_lookup <- setNames(counts$n, as.character(counts$sample))
+
   results <- list()
-  
+
   if (length(groups) == 2) {
     # Pairwise t-test
     g1 <- d$value[d$sample == groups[1]]
@@ -439,11 +442,13 @@ compare_metrics <- function(metrics_long, metric_name) {
         results[[length(results) + 1]] <- tibble(
           metric = metric_name,
           comparison = paste(groups[1], "vs", groups[2]),
+          n1 = length(g1), n2 = length(g2),
           test = "t.test", p_value = tt$p.value)
       if (!is.null(wt))
         results[[length(results) + 1]] <- tibble(
           metric = metric_name,
           comparison = paste(groups[1], "vs", groups[2]),
+          n1 = length(g1), n2 = length(g2),
           test = "wilcox.test", p_value = wt$p.value)
     }
   } else {
@@ -452,19 +457,24 @@ compare_metrics <- function(metrics_long, metric_name) {
       fit <- aov(value ~ sample, data = d)
       s   <- summary(fit)
       tibble(metric = metric_name, comparison = "Overall (ANOVA)",
+             n1 = NA_integer_, n2 = NA_integer_, N_total = sum(counts$n),
              test = "anova", p_value = s[[1]]$`Pr(>F)`[1])
     }, error = function(e) NULL)
     if (!is.null(aov_res)) results[[length(results) + 1]] <- aov_res
-    
+
     # Pairwise comparisons
     pw <- tryCatch({
       pt <- pairwise.t.test(d$value, d$sample, p.adjust.method = "BH")
       pmat <- pt$p.value
       pairs <- which(!is.na(pmat), arr.ind = TRUE)
       if (nrow(pairs) > 0) {
+        g_a <- rownames(pmat)[pairs[,1]]
+        g_b <- colnames(pmat)[pairs[,2]]
         tibble(
           metric     = metric_name,
-          comparison = paste(rownames(pmat)[pairs[,1]], "vs", colnames(pmat)[pairs[,2]]),
+          comparison = paste(g_a, "vs", g_b),
+          n1         = unname(n_lookup[g_a]),
+          n2         = unname(n_lookup[g_b]),
           test       = "pairwise.t (BH)",
           p_value    = pmat[pairs]
         )
@@ -857,7 +867,7 @@ ui <- fluidPage(
                                    choices  = c("Custom"              = "custom",
                                                 "Viridis"             = "viridis",
                                                 "Plasma"              = "plasma",
-                                                "Colorblind-friendly" = "colorblind",
+                                                "Colorblind-safe (Okabe-Ito)" = "colorblind",
                                                 "Publication"         = "publication",
                                                 "Rainbow"             = "rainbow",
                                                 "Grayscale"           = "gray"),
@@ -1674,6 +1684,9 @@ ui <- fluidPage(
                                   tags$h5(style = "margin-top:0;font-weight:700;color:#444;border-bottom:1px solid #ddd;padding-bottom:4px;",
                                           "Show on Graph"),
                                   checkboxInput("notes_show_caption", "Add experiment info as graph caption", FALSE),
+                                  checkboxInput("notes_show_errdef",
+                                                "Add error-bar definition + n to caption",
+                                                FALSE),
                                   conditionalPanel(condition = "input.notes_show_caption == true",
                                     checkboxGroupInput("notes_caption_fields",
                                       "Fields to include in caption:",
@@ -3431,6 +3444,35 @@ server <- function(input, output, session) {
     notes_cap <- if (isTRUE(input$notes_show_caption)) {
       tryCatch(build_notes_caption(), error = function(e) "")
     } else ""
+
+    # Optional error-bar / n definition line (publication requirement: state what
+    # error bars represent and the sample size). Additive, off by default.
+    if (isTRUE(input$notes_show_errdef)) {
+      errdef <- tryCatch({
+        dm2 <- if (!is.null(input$error_display_mode)) input$error_display_mode else "bars"
+        et2 <- if (!is.null(input$error_type)) input$error_type else "sem"
+        em2 <- if (!is.null(input$error_multiplier)) input$error_multiplier else 1
+        err_name <- switch(et2, sd = "SD", sem = "SEM", ci95 = "95% CI", et2)
+        mult_txt <- if (is.numeric(em2) && em2 != 1) paste0(em2, "× ") else ""
+        # Human label for the variability display mode
+        disp_txt <- switch(dm2,
+          bars           = paste0("Error bars = ", mult_txt, err_name),
+          shadow         = paste0("Shaded band = ", mult_txt, err_name),
+          combo          = paste0("Shaded band = ", mult_txt, err_name),
+          quantile_bands = "Bands = IQR (inner) and 2.5–97.5% (outer)",
+          spaghetti      = "Thin lines = individual replicates",
+          jitter         = "Points = individual replicate observations",
+          "")
+        # Representative replicate count (n) across timepoints
+        nrng <- if (!is.null(plot_data$n)) range(plot_data$n, na.rm = TRUE) else NA
+        n_txt <- if (all(is.finite(nrng)) && nrng[2] >= 1) {
+          if (nrng[1] == nrng[2]) paste0("n = ", nrng[1]) else paste0("n = ", nrng[1], "–", nrng[2])
+        } else ""
+        paste(c(disp_txt[nchar(disp_txt) > 0], n_txt[nchar(n_txt) > 0]), collapse = "; ")
+      }, error = function(e) "")
+      if (nchar(errdef) > 0)
+        notes_cap <- if (nchar(notes_cap) > 0) paste0(notes_cap, "\n", errdef) else errdef
+    }
     if (nchar(notes_cap) > 0) {
       cap_sz <- if (!is.null(input$notes_caption_size)) input$notes_caption_size else 9
       p <- p + theme(plot.caption = element_text(size = cap_sz, hjust = 0,
