@@ -124,6 +124,8 @@ if (has_rhandsontable) library(rhandsontable)
 has_officer   <- requireNamespace("officer",   quietly = TRUE)
 has_rvg       <- requireNamespace("rvg",       quietly = TRUE)
 has_gifski    <- requireNamespace("gifski",    quietly = TRUE)
+has_base64enc <- requireNamespace("base64enc", quietly = TRUE)
+has_gridExtra <- requireNamespace("gridExtra", quietly = TRUE)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -159,6 +161,262 @@ parse_excluded_timepoints <- function(text, all_timepoints) {
     if (min(diffs) <= tol) all_timepoints[which.min(diffs)] else NA_real_
   })
   unique(matched[!is.na(matched)])
+}
+
+# Null-coalescing operator. Defined here (top level) because the report
+# builders below use it; the server also defines it for its own use.
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+# ── Analysis report helpers ───────────────────────────────────────────────────
+# Plain-language definitions of every column produced by
+# calculate_growth_metrics() / calculate_infection_metrics(). The report
+# builders filter this list down to the columns actually present.
+
+METRIC_DEFINITIONS <- c(
+  sample          = "Sample name",
+  replicate       = "Replicate id (stacked block and/or duplicate-column replicate)",
+  initial_od      = "Mean OD at the first time point of the (filtered) curve",
+  max_od          = "Maximum (peak) OD of the mean curve",
+  time_max_od     = "Time at which the peak OD occurs",
+  final_od        = "Mean OD at the last time point",
+  auc             = "Area under the mean curve (trapezoidal rule)",
+  mu_max          = paste0("Maximum specific growth rate: the largest centered ",
+                           "rolling-window regression slope of ln(OD) against time ",
+                           "(window = the metrics smoothing setting, default 5 points); ",
+                           "NA when the curve never grows"),
+  doubling_time   = "ln(2) / mu_max; NA when there is no growth phase",
+  lag_phase       = paste0("End of lag: the first time at which the rolling ln(OD) ",
+                           "slope reaches 10% of mu_max"),
+  stat_phase_dur  = "Time spanned by all points at or above 95% of the peak OD",
+  lysis_time      = paste0("Lysis onset: the first post-peak time at which the decline ",
+                           "from the peak exceeds 5% of the peak OD; NA if the curve ",
+                           "never declines that far"),
+  lysis_rate      = paste0("Linear-regression slope of the mean curve from the peak to ",
+                           "the deepest post-peak point (negative = decline)"),
+  od_drop         = "Peak OD minus the post-peak minimum (absolute decline)",
+  residual_od     = "Post-peak minimum OD (residual OD after lysis)",
+  recovery_slope  = paste0("Linear-regression slope from the post-peak trough to the end ",
+                           "of the curve; reported only when positive (regrowth / recovery)"),
+  relative_growth    = "auc / auc of the reference (control) sample",
+  infection_strength = "1 - auc / auc of the reference (control) sample",
+  relative_mu_max    = "mu_max / mu_max of the reference (control) sample",
+  relative_max_od    = "max_od / max_od of the reference (control) sample",
+  lysis_onset_delta  = "lysis_time - lag_phase (how long after growth starts lysis begins)"
+)
+
+fmt_sig <- function(x, digits = 5) {
+  if (is.null(x)) return("")
+  vapply(x, function(v) {
+    if (is.na(v)) return("NA")
+    if (is.numeric(v)) format(signif(v, digits), trim = TRUE, scientific = FALSE)
+    else as.character(v)
+  }, character(1))
+}
+
+html_escape <- function(x) {
+  x <- gsub("&", "&amp;", x, fixed = TRUE)
+  x <- gsub("<", "&lt;",  x, fixed = TRUE)
+  gsub(">", "&gt;",  x, fixed = TRUE)
+}
+
+html_table <- function(df, digits = 5, class = NULL) {
+  if (is.null(df) || nrow(df) == 0) return("<p><em>No data.</em></p>")
+  df <- as.data.frame(df, stringsAsFactors = FALSE)  # tibbles: df[i, j] must be scalar
+  head_row <- paste0("<th>", html_escape(colnames(df)), "</th>", collapse = "")
+  body <- vapply(seq_len(nrow(df)), function(i) {
+    cells <- vapply(seq_len(ncol(df)), function(j) {
+      v <- df[i, j]
+      txt <- if (is.numeric(v)) fmt_sig(v, digits) else html_escape(as.character(v))
+      if (is.na(df[i, j])) txt <- "NA"
+      txt <- gsub("\n", "<br/>", txt, fixed = TRUE)
+      paste0("<td>", txt, "</td>")
+    }, character(1))
+    paste0("<tr>", paste0(cells, collapse = ""), "</tr>")
+  }, character(1))
+  cls <- if (is.null(class)) "" else paste0(" class='", class, "'")
+  paste0("<div class='tblwrap'><table", cls, "><thead><tr>", head_row,
+         "</tr></thead><tbody>",
+         paste0(body, collapse = ""), "</tbody></table></div>")
+}
+
+# Builds the entire self-contained HTML report as one string.
+# meta: named list with title, author, notes, generated, data_file, format,
+#       time_col, samples_txt, filter_txt, error_txt, settings_df, notebook_df,
+#       font_pt
+build_html_report <- function(meta, img_b64, stats_df, metrics_df) {
+  def_keys <- if (!is.null(metrics_df))
+    intersect(names(METRIC_DEFINITIONS), colnames(metrics_df))
+  else names(METRIC_DEFINITIONS)
+  defs_df <- data.frame(metric = def_keys,
+                        definition = unname(METRIC_DEFINITIONS[def_keys]),
+                        stringsAsFactors = FALSE)
+  si <- utils::sessionInfo()
+  pkg_names <- sort(names(si$otherPkgs %||% list()))
+  pkg_txt <- paste(vapply(pkg_names, function(p)
+    paste0(p, " ", as.character(si$otherPkgs[[p]]$Version)), character(1)),
+    collapse = ", ")
+
+  notes_html <- if (nzchar(trimws(meta$notes %||% "")))
+    paste0("<h2>Notes</h2><p class='notes'>",
+           gsub("\n", "<br/>", html_escape(meta$notes)), "</p>") else ""
+
+  notebook_html <- if (!is.null(meta$notebook_df))
+    paste0("<h2>Experiment notebook</h2>",
+           html_table(meta$notebook_df, class = "wrap prov")) else ""
+
+  font_pt <- meta$font_pt %||% 14
+
+  paste0(
+"<!DOCTYPE html><html><head><meta charset='utf-8'>
+<title>", html_escape(meta$title), "</title>
+<style>
+  html { background: #ffffff; }
+  body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+         max-width: 1000px; margin: 24px auto; padding: 0 16px;
+         color: #212529; background: #ffffff; font-size: ", font_pt, "px; }
+  h1 { border-bottom: 3px solid #343a40; padding-bottom: 8px; margin-bottom: 4px; }
+  h2 { color: #343a40; border-bottom: 1px solid #dee2e6; padding-bottom: 4px; margin-top: 32px; }
+  .meta { color: #6c757d; font-size: 0.9em; margin-bottom: 20px; }
+  .tblwrap { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 0.85em; margin: 12px 0; }
+  th, td { border: 1px solid #dee2e6; padding: 5px 9px; text-align: left; white-space: nowrap; }
+  th { background: #f1f3f5; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  img.figure { max-width: 100%; height: auto; border: 1px solid #dee2e6; }
+  .notes { background: #fff9db; border: 1px solid #ffe066; border-radius: 6px; padding: 12px; }
+  .prov td:first-child { font-weight: bold; background: #f1f3f5; }
+  table.wrap td { white-space: normal; }
+  footer { margin-top: 40px; color: #adb5bd; font-size: 0.8em; border-top: 1px solid #dee2e6; padding-top: 8px; }
+  @media print { body { max-width: none; } h2 { page-break-after: avoid; } .tblwrap { overflow-x: visible; } }
+</style></head><body>
+<h1>", html_escape(meta$title), "</h1>
+<div class='meta'>",
+  if (nzchar(meta$author %||% "")) paste0(html_escape(meta$author), " &middot; ") else "",
+  "Generated ", html_escape(meta$generated), "</div>",
+notes_html,
+"<h2>Data provenance</h2>
+<div class='tblwrap'><table class='prov'>
+<tr><td>Data file</td><td>",        html_escape(meta$data_file),   "</td></tr>
+<tr><td>Detected format</td><td>",  html_escape(meta$format),      "</td></tr>
+<tr><td>Time column</td><td>",      html_escape(meta$time_col),    "</td></tr>
+<tr><td>Samples plotted</td><td>",  html_escape(meta$samples_txt), "</td></tr>
+<tr><td>Time filtering</td><td>",   html_escape(meta$filter_txt),  "</td></tr>
+<tr><td>Error display</td><td>",    html_escape(meta$error_txt),   "</td></tr>
+</table></div>",
+notebook_html,
+"<h2>Figure</h2>
+<img class='figure' src='data:image/png;base64,", img_b64, "' alt='OD growth curve figure'/>
+<h2>Summary statistics</h2>
+<p>Per sample and time point, computed from the currently loaded (and filtered) data.
+SEM = SD / &radic;n; 95% CI = t<sub>0.975, n-1</sub> &times; SEM.</p>",
+html_table(stats_df),
+"<h2>Curve metrics</h2>
+<p>Computed from each sample's mean curve as plotted.</p>",
+html_table(metrics_df),
+"<h3>Metric definitions</h3>",
+html_table(defs_df, class = "wrap"),
+"<h2>Key visual settings</h2>",
+html_table(meta$settings_df, class = "wrap"),
+"<h2>Reproducibility</h2>
+<p>", html_escape(paste0(si$R.version$version.string, "; platform ", si$platform)), "</p>
+<p style='font-size:0.85em;color:#6c757d;'>Attached packages: ", html_escape(pkg_txt), "</p>
+<footer>OD Growth Curve Analyzer &middot; Michael Baffour Awuah / Ramsey Lab</footer>
+</body></html>")
+}
+
+# Builds a multi-page PDF report (no LaTeX/pandoc; base pdf device + gridExtra).
+# Page 1: title + provenance. Then notebook, figure, stats and metrics tables.
+build_pdf_report <- function(file, meta, plot_obj, stats_df, metrics_df,
+                             width = 10, height = 8) {
+  stopifnot(requireNamespace("gridExtra", quietly = TRUE))
+  grDevices::pdf(file, width = width, height = height, onefile = TRUE)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  fscale <- (meta$font_pt %||% 14) / 14   # report font size control
+  tt  <- gridExtra::ttheme_default(
+    core    = list(fg_params = list(cex = 0.55 * fscale)),
+    colhead = list(fg_params = list(cex = 0.6 * fscale)))
+
+  # ── Page 1: title + provenance ──
+  grid::grid.newpage()
+  grid::grid.text(meta$title, y = 0.90, gp = grid::gpar(fontsize = 22 * fscale, fontface = "bold"))
+  sub <- paste0(if (nzchar(meta$author %||% "")) paste0(meta$author, "  -  ") else "",
+                "Generated ", meta$generated)
+  grid::grid.text(sub, y = 0.84, gp = grid::gpar(fontsize = 11 * fscale, col = "grey40"))
+  prov <- c(paste0("Data file: ",       meta$data_file),
+            paste0("Detected format: ", meta$format),
+            paste0("Time column: ",     meta$time_col),
+            paste0("Samples: ",         paste(strwrap(meta$samples_txt, 80), collapse = "\n")),
+            paste0("Time filtering: ",  meta$filter_txt),
+            paste0("Error display: ",   meta$error_txt))
+  grid::grid.text(paste(prov, collapse = "\n"), y = 0.68, just = "top",
+                  gp = grid::gpar(fontsize = 11 * fscale, lineheight = 1.4))
+  if (nzchar(trimws(meta$notes %||% ""))) {
+    grid::grid.text(paste0("Notes:\n", paste(strwrap(meta$notes, 90), collapse = "\n")),
+                    y = 0.40, just = "top",
+                    gp = grid::gpar(fontsize = 10 * fscale, lineheight = 1.3, col = "grey20"))
+  }
+
+  # ── Experiment notebook page (only when fields were filled in) ──
+  if (!is.null(meta$notebook_df)) {
+    nb <- as.data.frame(meta$notebook_df, stringsAsFactors = FALSE)
+    nb$value <- vapply(nb$value, function(s)
+      paste(strwrap(s, 60), collapse = "\n"), character(1))
+    grid::grid.newpage()
+    grid::grid.text("Experiment notebook", y = 0.97,
+                    gp = grid::gpar(fontsize = 13 * fscale, fontface = "bold"))
+    g <- gridExtra::tableGrob(nb, rows = NULL, theme = tt)
+    gw <- grid::convertWidth(sum(g$widths), "npc", valueOnly = TRUE)
+    vp <- if (gw > 0.98) grid::viewport(y = 0.5, width = 0.98 / gw) else grid::viewport(y = 0.5)
+    grid::pushViewport(vp); grid::grid.draw(g); grid::popViewport()
+  }
+
+  # ── Figure page ──
+  print(plot_obj)
+
+  # ── Table pages (chunked) ──
+  fmt_df <- function(df) {
+    df2 <- as.data.frame(df, stringsAsFactors = FALSE)
+    for (j in seq_along(df2)) if (is.numeric(df2[[j]])) df2[[j]] <- fmt_sig(df2[[j]])
+    df2
+  }
+  page_table <- function(df, title, rows_per_page = 28) {
+    df <- fmt_df(df)
+    n  <- nrow(df)
+    if (n == 0) return(invisible(NULL))
+    starts <- seq(1, n, by = rows_per_page)
+    for (s in starts) {
+      chunk <- df[s:min(s + rows_per_page - 1, n), , drop = FALSE]
+      grid::grid.newpage()
+      grid::grid.text(paste0(title,
+                             if (length(starts) > 1)
+                               paste0("  (rows ", s, "-", min(s + rows_per_page - 1, n),
+                                      " of ", n, ")") else ""),
+                      y = 0.97, gp = grid::gpar(fontsize = 13 * fscale, fontface = "bold"))
+      g <- gridExtra::tableGrob(chunk, rows = NULL, theme = tt)
+      # scale down if wider than the page
+      gw <- grid::convertWidth(sum(g$widths), "npc", valueOnly = TRUE)
+      vp <- if (gw > 0.98) grid::viewport(y = 0.5, width = 0.98 / gw) else grid::viewport(y = 0.5)
+      grid::pushViewport(vp); grid::grid.draw(g); grid::popViewport()
+    }
+  }
+  page_table(stats_df,   "Summary statistics (mean / SD / n / SEM / 95% CI)")
+  if (!is.null(metrics_df) && ncol(metrics_df) > 0) {
+    # metrics are wide; page through blocks of columns, repeating the sample col
+    other  <- setdiff(seq_len(ncol(metrics_df)), 1)
+    blocks <- if (length(other)) split(other, ceiling(seq_along(other) / 7)) else list()
+    for (bi in seq_along(blocks)) {
+      mb <- as.data.frame(metrics_df, stringsAsFactors = FALSE)[, c(1, blocks[[bi]]), drop = FALSE]
+      page_table(mb, paste0("Curve metrics (", bi, " of ", length(blocks), ")"))
+    }
+    defs_df <- data.frame(metric = intersect(names(METRIC_DEFINITIONS), colnames(metrics_df)),
+                          stringsAsFactors = FALSE)
+    defs_df$definition <- unname(METRIC_DEFINITIONS[defs_df$metric])
+    defs_df$definition <- vapply(defs_df$definition, function(s)
+      paste(strwrap(s, 70), collapse = "\n"), character(1))
+    page_table(defs_df, "Metric definitions", rows_per_page = 14)
+  }
+  invisible(file)
 }
 
 detect_replicate_column <- function(data, time_col, group_col, value_col) {
@@ -604,6 +862,22 @@ gif_ui <- if (has_gifski) {
 } else {
   p(style = "color:#999;font-size:.85em;",
     "Install 'gifski' to enable GIF export.")
+}
+
+html_report_ui <- if (has_base64enc) {
+  downloadButton("downloadHTMLReport", "HTML Report (single file)",
+                 style = "background:#2C3E50;color:white;border:none;width:100%;")
+} else {
+  p(style = "color:#999;font-size:.85em;",
+    "Install 'base64enc' to enable the HTML report.")
+}
+
+pdf_report_ui <- if (has_gridExtra) {
+  downloadButton("downloadPDFReport", "PDF Report (multi-page)",
+                 style = "background:#8E44AD;color:white;border:none;width:100%;margin-top:6px;")
+} else {
+  p(style = "color:#999;font-size:.85em;",
+    "Install 'gridExtra' to enable the PDF report.")
 }
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -2104,7 +2378,35 @@ ui <- fluidPage(
                   downloadButton("batch_export_zip", tagList(icon("file-archive"), " Export as ZIP"),
                                  style = "background:#27ae60;color:white;border:none;font-weight:600;font-size:1.05em;padding:10px 20px;"),
                   br(), br(),
-                  uiOutput("batch_export_status")
+                  uiOutput("batch_export_status"),
+
+                  hr(),
+
+                  # ── Single-File Analysis Report ────────────────────────────
+                  div(
+                    h4("Single-File Analysis Report"),
+                    p(style = "font-size:.85em;color:#888;",
+                      "One self-contained file: the current figure, summary statistics, ",
+                      "curve metrics with plain-language definitions, data provenance, ",
+                      "key visual settings, everything filled in on the Experiment Notes ",
+                      "tab, and R session info. Nothing external to link or lose."),
+                    fluidRow(
+                      column(4, textInput("report_title",  "Report title:",
+                                          "Lysis Curve Analysis Report")),
+                      column(4, textInput("report_author", "Author / lab:", "")),
+                      column(4, numericInput("report_font_size",
+                                             "Report base font size (pt):", 14, 9, 24))
+                    ),
+                    textAreaInput("report_notes", "Summary / notes (optional):", "",
+                                  rows = 3, resize = "vertical", width = "100%"),
+                    p(style = "font-size:.8em;color:#888;margin-top:-6px;",
+                      "The font size scales all report text and tables (HTML and PDF)."),
+                    fluidRow(
+                      column(4, html_report_ui),
+                      column(4, pdf_report_ui)
+                    ),
+                    br()
+                  )
                 )
               ) # end Batch Export
 
@@ -2642,7 +2944,10 @@ server <- function(input, output, session) {
       export_height         = 8,          export_dpi             = 300,
       plot_width            = 820,        plot_height            = 600,
       gif_fps               = 1,          gif_width              = 800,
-      gif_height            = 600,        x_extra_ticks          = ""
+      gif_height            = 600,        x_extra_ticks          = "",
+      report_title          = "Lysis Curve Analysis Report",
+      report_author         = "",         report_notes           = "",
+      report_font_size      = 14
     )
     for (nm in names(defs)) {
       tryCatch({
@@ -3750,7 +4055,7 @@ server <- function(input, output, session) {
         png  = grDevices::png( file, width = total_w_in * dpi, height = h_in * dpi,
                                res = dpi, units = "px"),
         tiff = grDevices::tiff(file, width = total_w_in * dpi, height = h_in * dpi,
-                               res = dpi, units = "px"),
+                               res = dpi, units = "px", compression = "lzw"),
         jpeg = grDevices::jpeg(file, width = total_w_in * dpi, height = h_in * dpi,
                                res = dpi, units = "px"),
         grDevices::pdf(file, width = total_w_in, height = h_in)
@@ -5856,6 +6161,169 @@ server <- function(input, output, session) {
   # BATCH EXPORT — server logic
   # ═══════════════════════════════════════════════════════════════════════════
 
+  # ── Single-File Analysis Report ──────────────────────────────────────────────
+  # Self-contained HTML / PDF report: figure + stats + metrics + provenance +
+  # experiment notebook + session info. Uses the same data the plot shows.
+
+  # Summary stats table with reader-friendly column names
+  stats_table_export <- function() {
+    pd <- prepare_plot_data()
+    data.frame(time      = pd$time,
+               sample    = pd$variable,
+               mean      = pd$mean_value,
+               sd        = pd$sd_value,
+               n         = pd$n,
+               sem       = pd$sem_value,
+               ci95_half_width = pd$ci95_value,
+               stringsAsFactors = FALSE)
+  }
+
+  # Metrics for the report: prefer whatever the Analysis tab has already
+  # computed (infection metrics win over plain metrics); otherwise compute a
+  # fresh per-sample table so the report works without pressing Calculate.
+  report_metrics_current <- function() {
+    if (!is.null(rv_analysis$metrics_inf)) return(rv_analysis$metrics_inf)
+    if (!is.null(rv_analysis$metrics))     return(rv_analysis$metrics)
+    pd <- tryCatch(prepare_metrics_data(), error = function(e) NULL)
+    if (is.null(pd) || nrow(pd) == 0) return(NULL)
+    m <- tryCatch(calculate_growth_metrics(
+      pd, smooth_window = input$metrics_smooth_window %||% 5),
+      error = function(e) NULL)
+    if (is.null(m) || nrow(m) == 0) return(NULL)
+    if ("replicate" %in% names(m)) {
+      m <- m %>% group_by(sample) %>%
+        summarise(across(where(is.numeric), ~mean(.x, na.rm = TRUE)), .groups = "drop")
+    }
+    m
+  }
+
+  # Shared metadata for both report formats
+  report_meta <- function() {
+    samps <- input$selected_samples
+    filter_txt <- if (isTRUE(input$enable_time_filter)) {
+      rng  <- input$time_filter_range
+      excl <- parse_excluded_timepoints(input$exclude_timepoints, rv$all_timepoints)
+      paste0("range ", if (!is.null(rng)) paste0(rng[1], " - ", rng[2]) else "full",
+             if (length(excl)) paste0("; excluded points: ", paste(sort(excl), collapse = ", "))
+             else "")
+    } else "none (all time points shown)"
+    error_txt <- if (identical(input$error_type, "none")) "none" else
+      paste0(switch(input$error_type, sd = "SD", sem = "SEM", ci95 = "95% CI",
+                    as.character(input$error_type)),
+             if (!is.null(input$error_multiplier) && input$error_multiplier != 1)
+               paste0(" x ", input$error_multiplier) else "",
+             ", shown as ", if (identical(input$error_display_mode, "shadow"))
+               "shaded ribbon" else "error bars")
+    settings_df <- data.frame(
+      setting = c("X scale", "Y scale", "X label", "Y label", "Palette",
+                  "Line thickness", "Points shown", "Point size",
+                  "Export size (in)", "Export DPI",
+                  "Metrics smoothing window", "Reference sample"),
+      value = as.character(c(
+        input$x_scale_type %||% "", input$y_scale_type %||% "",
+        input$x_axis_label %||% "", input$y_axis_label %||% "",
+        input$color_palette %||% "",
+        input$line_thickness %||% "", input$show_points %||% "",
+        input$shape_size %||% "",
+        paste0(input$export_width %||% "", " x ", input$export_height %||% ""),
+        input$export_dpi %||% "",
+        input$metrics_smooth_window %||% 5,
+        if (nzchar(input$ref_sample %||% "")) input$ref_sample
+        else "none (infection metrics omitted)")),
+      stringsAsFactors = FALSE)
+
+    # ── Experiment notebook: collect non-empty fields ───────────────────────
+    en <- get_notes()
+    nb_pairs <- list(
+      "Experiment ID"      = en$exp_id,
+      "Date"               = en$date,
+      "Experimenter"       = en$experimenter,
+      "Project"            = en$project,
+      "Lab / Institution"  = en$institution,
+      "Experiment type"    = en$exp_type,
+      "Host strain(s)"     = en$host_strain,
+      "Phage / plasmid"    = en$phage_plasmid,
+      "MOI"                = en$moi,
+      "Replicate / batch"  = en$replicate,
+      "Passage"            = en$passage,
+      "Growth medium"      = en$media,
+      "Temperature (°C)"   = en$temperature,
+      "Time of infection/induction" = en$time_inf,
+      "Inducer"            = en$inducer,
+      "Inducer concentration" = en$inducer_conc,
+      "Other condition"    = en$extra_cond,
+      "Observations / results" = en$observations,
+      "Issues / anomalies" = en$issues,
+      "Next steps"         = en$next_steps,
+      "Tags"               = en$tags
+    )
+    for (i in 1:3) {
+      k <- en[[paste0("custom_key", i)]]
+      v <- en[[paste0("custom_val", i)]]
+      if (nzchar(trimws(k %||% ""))) nb_pairs[[trimws(k)]] <- v %||% ""
+    }
+    keep <- vapply(nb_pairs, function(v) nzchar(trimws(v %||% "")), logical(1))
+    # Date and Experiment type always have defaults; only emit the notebook
+    # when at least one other field is actually filled in.
+    notebook_df <- if (any(keep & !(names(nb_pairs) %in% c("Date", "Experiment type")))) {
+      data.frame(field = names(nb_pairs)[keep],
+                 value = unlist(nb_pairs[keep], use.names = FALSE),
+                 stringsAsFactors = FALSE)
+    } else NULL
+
+    list(title       = if (nzchar(trimws(input$report_title %||% ""))) input$report_title
+                       else "Lysis Curve Analysis Report",
+         author      = input$report_author %||% "",
+         notes       = input$report_notes %||% "",
+         generated   = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+         data_file   = rv$data_source %||% "(unknown)",
+         format      = if (isTRUE(rv$is_long_format)) "long" else
+                       "wide (stacked blocks and/or duplicate replicate columns pooled)",
+         time_col    = rv$time_col %||% "",
+         samples_txt = paste(samps, collapse = ", "),
+         filter_txt  = filter_txt,
+         error_txt   = error_txt,
+         settings_df = settings_df,
+         notebook_df = notebook_df,
+         font_pt     = input$report_font_size %||% 14)
+  }
+
+  if (has_base64enc) {
+    output$downloadHTMLReport <- downloadHandler(
+      filename = function()
+        paste0("lysis_report_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".html"),
+      content = function(file) {
+        req(rv$data, input$selected_samples)
+        metrics <- report_metrics_current()
+        p       <- generate_plot()
+        tmp_png <- tempfile(fileext = ".png")
+        on.exit(unlink(tmp_png), add = TRUE)
+        ggsave(tmp_png, plot = p, device = "png",
+               width = input$export_width, height = input$export_height,
+               units = "in", dpi = 150, bg = "white")
+        img_b64 <- base64enc::base64encode(tmp_png)
+        html <- build_html_report(report_meta(), img_b64,
+                                  stats_table_export(), metrics)
+        writeLines(html, file, useBytes = TRUE)
+      }
+    )
+  }
+
+  if (has_gridExtra) {
+    output$downloadPDFReport <- downloadHandler(
+      filename = function()
+        paste0("lysis_report_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf"),
+      content = function(file) {
+        req(rv$data, input$selected_samples)
+        metrics <- report_metrics_current()
+        build_pdf_report(file, report_meta(), generate_plot(),
+                         stats_table_export(), metrics,
+                         width  = max(input$export_width,  8),
+                         height = max(input$export_height, 6))
+      }
+    )
+  }
+
   output$batch_export_zip <- downloadHandler(
     filename = function()
       paste0("lysis_export_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".zip"),
@@ -5869,9 +6337,11 @@ server <- function(input, output, session) {
       files  <- character(0)
 
       save_plot <- function(name, p) {
-        fp <- file.path(tmp_dir, paste0(name, ".", fmt))
-        tryCatch(ggsave(fp, plot = p, device = fmt, width = w, height = h, dpi = dpi_v),
-                 error = function(e) NULL)
+        fp   <- file.path(tmp_dir, paste0(name, ".", fmt))
+        args <- list(fp, plot = p, device = fmt, width = w, height = h, dpi = dpi_v)
+        # TIFF must be losslessly compressed (journal requirement)
+        if (identical(fmt, "tiff")) args$compression <- "lzw"
+        tryCatch(do.call(ggsave, args), error = function(e) NULL)
         if (file.exists(fp)) files <<- c(files, fp)
       }
 

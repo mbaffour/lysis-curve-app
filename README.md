@@ -93,7 +93,12 @@ install.packages(c("officer", "rvg"))
 
 # Optional — animated GIF export
 install.packages("gifski")
+
+# Optional — single-file HTML / PDF analysis reports
+install.packages(c("base64enc", "gridExtra"))
 ```
+
+*(Or skip all of this: the double-click launchers / `Rscript run_app.R` install everything automatically on first run.)*
 
 | Package | Role |
 |---|---|
@@ -116,16 +121,28 @@ install.packages("gifski")
 
 ## Quick Start
 
-**Option 1 — RStudio:**
+**Option 1 — double-click to run (no command line).** If R is installed, just double-click:
+
+| OS | Double-click |
+|----|--------------|
+| **Windows** | `Run OD Growth Curve Analyzer.bat` |
+| **macOS** | `Run OD Growth Curve Analyzer.command` |
+| **Linux** | `./run.sh` |
+
+The first run auto-installs any missing R packages (a few minutes); after that the app opens in your browser instantly. You can also run `Rscript run_app.R` directly.
+
+**Option 2 — RStudio:**
 1. Open RStudio → `File > Open File` → select `Lysis Curve Ap 26.03.13.R`
 2. Click **Run App** in the script editor toolbar.
 
-**Option 2 — R console:**
+**Option 3 — R console:**
 ```r
 shiny::runApp("path/to/Lysis Curve Ap 26.03.13.R")
 ```
 
 The app opens in your default browser. Keep the R console open while using it.
+
+**First time?** Click **Load Demo Data** under the file picker — a built-in dataset (uninfected + two phage MOIs, 3 replicates each) loads instantly so you can explore every tab without a file. After any load, the green **data summary box** shows exactly what was detected: format, time column, samples, and replicate structure.
 
 ---
 
@@ -142,7 +159,9 @@ time,SampleA,SampleB,Control
 20,0.14,0.15,0.12
 ```
 
-**Replicates in wide format:** Stack replicate blocks vertically. The app detects where the time counter resets and assigns replicate IDs automatically.
+**Replicates in wide format** — both conventions are supported (and can be combined):
+
+*Stacked blocks* — repeat the time series vertically. The app detects where the time counter resets and assigns replicate IDs automatically.
 
 ```csv
 time,SampleA,Control
@@ -153,6 +172,16 @@ time,SampleA,Control
 10,0.09,0.08
 20,0.15,0.13
 ```
+
+*Duplicate column headers* — give replicate columns the same name; all of them are pooled per sample.
+
+```csv
+time,SampleA,SampleA,SampleA,Control,Control,Control
+0,0.05,0.06,0.04,0.04,0.05,0.04
+10,0.08,0.09,0.07,0.07,0.08,0.06
+```
+
+> **Accuracy note (fixed 2026-08-19):** earlier versions silently used only the *first* column of each duplicated name (means from a single replicate, no error bars), and enabling time filtering with stacked replicates silently emptied the Calculate Metrics results. Both are fixed; the data summary box always shows the replicate structure the app actually detected.
 
 ### Long format
 
