@@ -1261,6 +1261,21 @@ ui <- fluidPage(
     tags$style(HTML("
       /* ── Base layout ─────────────────────────────────────────── */
       body { font-family: 'Segoe UI', Arial, sans-serif; }
+
+      /* ── Sticky sidebar: the sidebar scrolls in its own pane and the
+            plot / main panel stays in view while you adjust controls ── */
+      @media (min-width: 768px) {
+        .container-fluid > .row { display: flex; align-items: flex-start; }
+        .container-fluid > .row > .col-sm-3 {
+          float: none;
+          position: sticky;
+          top: 0;
+          max-height: 100vh;
+          overflow-y: auto;
+          scrollbar-width: thin;
+        }
+        .container-fluid > .row > .col-sm-9 { float: none; }
+      }
       .panel-section {
         background:#f8f9fa; padding:12px; border-radius:5px;
         margin:10px 0; border:1px solid #e9ecef;
@@ -1333,6 +1348,31 @@ ui <- fluidPage(
         font-size:.75em; color:#888; font-style:italic; margin-top:-4px; margin-bottom:6px;
       }
       .well .wit-label { color:#7a9bb5 !important; }
+
+      /* ── Sidebar pill tabset (grouped control sections) ────────── */
+      /* Scoped to .well so the main panel tabset (#main_tabs) is untouched. */
+      .well .nav-pills {
+        display:flex; flex-wrap:wrap; gap:4px;
+        margin:0 0 12px 0; padding:0 0 8px 0;
+        border-bottom:1px solid #3a4f6e;
+      }
+      .well .nav-pills > li { float:none; margin:0; }
+      .well .nav-pills > li > a {
+        padding:4px 10px; font-size:.8em; font-weight:600; line-height:1.3;
+        background:#2c3e50; color:#c8d8e8 !important;
+        border:1px solid #3a4f6e; border-radius:12px;
+      }
+      .well .nav-pills > li > a:hover,
+      .well .nav-pills > li > a:focus {
+        background:#3a4f6e; color:#ffffff !important;
+      }
+      .well .nav-pills > li.active > a,
+      .well .nav-pills > li.active > a:hover,
+      .well .nav-pills > li.active > a:focus {
+        background:#4ecdc4 !important; color:#12222e !important;
+        border-color:#4ecdc4 !important;
+      }
+      .well .tab-content { margin-top:2px; }
     "))
   ),
   
@@ -1346,26 +1386,11 @@ ui <- fluidPage(
                  div(style = "text-align:right; margin-top:-8px; margin-bottom:4px;",
                      checkboxInput("night_mode", "\U1F319 Night Mode", value = FALSE)),
 
-                 # ── Settings ─────────────────────────────────────────────────────────────
-                 div(class = "panel-section",
-                     h4("Save / Load Settings", class = "panel-title"),
-                     p(style = "font-size:.82em;color:#555;margin-bottom:8px;",
-                       "Saves all visual settings: axis scales, labels, error bars, fonts, line/point options, ",
-                       "AND per-sample aesthetics (color, shape, linetype) keyed by sample name. ",
-                       "Loading restores all those settings — but never touches your data, ",
-                       "sample selection, or time filter."),
-                     fluidRow(
-                       column(6, downloadButton("saveSettings",  "Save Settings",  style = "width:100%")),
-                       column(6, actionButton("clearSettings", "Clear & Reset",
-                                              icon  = icon("times"),
-                                              style = "width:100%;background:#dc3545;color:white;border:none;"))
-                     ),
-                     br(),
-                     fileInput("loadSettings", "Load Settings File",
-                               accept = c("application/json", ".json")),
-                     uiOutput("settings_status_ui")
-                 ),
-                 
+                 # ── Grouped control sections (pill tabset) ────────────────────────────────
+                 tabsetPanel(
+                   id = "sidebar_tabs", type = "pills",
+
+                   tabPanel("Axes",
                  # ── Axis Settings ─────────────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Axis Settings"),
@@ -1475,7 +1500,6 @@ ui <- fluidPage(
                                    selected = "0")
                    )
                  ),
-                 
                  # ── Time Point Filtering ──────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Time Point Filtering"),
@@ -1507,32 +1531,10 @@ ui <- fluidPage(
                                       style = "width:100%;background:#2C3E50;color:white;border:none;font-size:.85em;")
                        )
                    )
-                 ),
-                 
-                 # ── Region Highlighting ───────────────────────────────────────────────────
-                 tags$details(
-                   tags$summary("Region Highlighting"),
-                   div(class = "panel-section",
-                       checkboxInput("enable_highlighting", "Enable Region Highlighting", FALSE),
-                       conditionalPanel(condition = "input.enable_highlighting == true",
-                                        numericInput("region_count", "Number of Regions:", 1, 1, 5),
-                                        uiOutput("region_settings")
-                       )
-                   )
-                 ),
-                 
-                 # ── Time Point Markers ────────────────────────────────────────────────────
-                 tags$details(
-                   tags$summary("Time Point Markers"),
-                   div(class = "panel-section",
-                       checkboxInput("enable_time_markers", "Enable Time Markers", FALSE),
-                       conditionalPanel(condition = "input.enable_time_markers == true",
-                                        numericInput("marker_count", "Number of Markers:", 1, 1, 10),
-                                        uiOutput("time_marker_settings")
-                       )
-                   )
-                 ),
-                 
+                 )
+                   ),
+
+                   tabPanel("Style",
                  # ── Color Palettes ────────────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Color Palettes"),
@@ -1549,7 +1551,6 @@ ui <- fluidPage(
                        htmlOutput("palette_preview")
                    )
                  ),
-                 
                  # ── Line & Point Settings ─────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Line & Point Settings"),
@@ -1566,7 +1567,6 @@ ui <- fluidPage(
                        ),
                    )
                  ),
-
                  # ── Legend ────────────────────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Legend"),
@@ -1627,7 +1627,47 @@ ui <- fluidPage(
                          "Font size follows Axis Text size in Axis Settings.")
                    )
                  ),
+                 # ── Variable Styling ──────────────────────────────────────────────────────
+                 tags$details(
+                   tags$summary("Variable Styling"),
+                   div(class = "panel-section",
+                       h4("Sample Selection", class = "panel-title"),
+                       fluidRow(
+                         column(8, selectInput("selected_samples", "Select Samples (click order = legend order):",
+                                              choices = character(0), multiple = TRUE)),
+                         column(2, actionButton("samples_select_all", "All",
+                                                style = "margin-top:25px;width:100%;font-size:.8em;")),
+                         column(2, actionButton("samples_deselect_all", "None",
+                                                style = "margin-top:25px;width:100%;font-size:.8em;background:#dc3545;color:white;border:none;"))
+                       ),
+                       uiOutput("var_settings")
+                   )
+                 )
+                   ),
 
+                   tabPanel("Marks",
+                 # ── Region Highlighting ───────────────────────────────────────────────────
+                 tags$details(
+                   tags$summary("Region Highlighting"),
+                   div(class = "panel-section",
+                       checkboxInput("enable_highlighting", "Enable Region Highlighting", FALSE),
+                       conditionalPanel(condition = "input.enable_highlighting == true",
+                                        numericInput("region_count", "Number of Regions:", 1, 1, 5),
+                                        uiOutput("region_settings")
+                       )
+                   )
+                 ),
+                 # ── Time Point Markers ────────────────────────────────────────────────────
+                 tags$details(
+                   tags$summary("Time Point Markers"),
+                   div(class = "panel-section",
+                       checkboxInput("enable_time_markers", "Enable Time Markers", FALSE),
+                       conditionalPanel(condition = "input.enable_time_markers == true",
+                                        numericInput("marker_count", "Number of Markers:", 1, 1, 10),
+                                        uiOutput("time_marker_settings")
+                       )
+                   )
+                 ),
                  # ── Label Options ─────────────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Label Options"),
@@ -1640,7 +1680,38 @@ ui <- fluidPage(
                        )
                    )
                  ),
-                 
+                 # ── Threshold / Annotation Line ───────────────────────────────────────────
+                 tags$details(
+                   tags$summary("Threshold / Annotation Line"),
+                   div(class = "panel-section",
+                     h4("Horizontal Threshold Line", class = "panel-title"),
+                     checkboxInput("enable_threshold", "Show threshold line", value = FALSE),
+                     conditionalPanel("input.enable_threshold",
+                       numericInput("threshold_value", "OD threshold value:", value = 0.3, step = 0.01),
+                       fluidRow(
+                         column(6, selectInput("threshold_color", "Line color:",
+                           choices = c("Red" = "#e74c3c", "Blue" = "#2980b9",
+                                       "Black" = "#000000", "Green" = "#27ae60",
+                                       "Orange" = "#e67e22", "Custom" = "custom"),
+                           selected = "#e74c3c")),
+                         column(6, conditionalPanel("input.threshold_color == 'custom'",
+                           textInput("threshold_color_custom", "HEX:", "#e74c3c")))
+                       ),
+                       fluidRow(
+                         column(6, selectInput("threshold_linetype", "Line type:",
+                           choices = c("Dashed" = "dashed", "Dotted" = "dotted",
+                                       "Solid" = "solid", "Dotdash" = "dotdash"),
+                           selected = "dashed")),
+                         column(6, numericInput("threshold_linewidth", "Line width:", value = 0.8, min = 0.2, max = 5, step = 0.1))
+                       ),
+                       textInput("threshold_label", "Label (leave blank for none):", value = "Threshold"),
+                       checkboxInput("threshold_show_crossings", "Report crossing times in console", value = FALSE)
+                     )
+                   )
+                 )
+                   ),
+
+                   tabPanel("Error",
                  # ── Error Bars / Shadow ───────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Variability / Error Display"),
@@ -1707,8 +1778,10 @@ ui <- fluidPage(
                            "Plots each raw replicate observation. Width > 0 adds horizontal jitter.")
                        )
                    )
-                 ),
-                 
+                 )
+                   ),
+
+                   tabPanel("Export",
                  # ── Plot Dimensions & Export ──────────────────────────────────────────────
                  tags$details(
                    tags$summary("Plot Dimensions & Export"),
@@ -1748,54 +1821,28 @@ ui <- fluidPage(
                        gif_ui
                    )
                  ),
-                 
-                 # ── Threshold / Annotation Line ───────────────────────────────────────────
-                 tags$details(
-                   tags$summary("Threshold / Annotation Line"),
-                   div(class = "panel-section",
-                     h4("Horizontal Threshold Line", class = "panel-title"),
-                     checkboxInput("enable_threshold", "Show threshold line", value = FALSE),
-                     conditionalPanel("input.enable_threshold",
-                       numericInput("threshold_value", "OD threshold value:", value = 0.3, step = 0.01),
-                       fluidRow(
-                         column(6, selectInput("threshold_color", "Line color:",
-                           choices = c("Red" = "#e74c3c", "Blue" = "#2980b9",
-                                       "Black" = "#000000", "Green" = "#27ae60",
-                                       "Orange" = "#e67e22", "Custom" = "custom"),
-                           selected = "#e74c3c")),
-                         column(6, conditionalPanel("input.threshold_color == 'custom'",
-                           textInput("threshold_color_custom", "HEX:", "#e74c3c")))
-                       ),
-                       fluidRow(
-                         column(6, selectInput("threshold_linetype", "Line type:",
-                           choices = c("Dashed" = "dashed", "Dotted" = "dotted",
-                                       "Solid" = "solid", "Dotdash" = "dotdash"),
-                           selected = "dashed")),
-                         column(6, numericInput("threshold_linewidth", "Line width:", value = 0.8, min = 0.2, max = 5, step = 0.1))
-                       ),
-                       textInput("threshold_label", "Label (leave blank for none):", value = "Threshold"),
-                       checkboxInput("threshold_show_crossings", "Report crossing times in console", value = FALSE)
-                     )
-                   )
-                 ),
-
-                 # ── Variable Styling ──────────────────────────────────────────────────────
-                 tags$details(
-                   tags$summary("Variable Styling"),
-                   div(class = "panel-section",
-                       h4("Sample Selection", class = "panel-title"),
-                       fluidRow(
-                         column(8, selectInput("selected_samples", "Select Samples (click order = legend order):",
-                                              choices = character(0), multiple = TRUE)),
-                         column(2, actionButton("samples_select_all", "All",
-                                                style = "margin-top:25px;width:100%;font-size:.8em;")),
-                         column(2, actionButton("samples_deselect_all", "None",
-                                                style = "margin-top:25px;width:100%;font-size:.8em;background:#dc3545;color:white;border:none;"))
-                       ),
-                       uiOutput("var_settings")
+                 # ── Settings ─────────────────────────────────────────────────────────────
+                 div(class = "panel-section",
+                     h4("Save / Load Settings", class = "panel-title"),
+                     p(style = "font-size:.82em;color:#555;margin-bottom:8px;",
+                       "Saves all visual settings: axis scales, labels, error bars, fonts, line/point options, ",
+                       "AND per-sample aesthetics (color, shape, linetype) keyed by sample name. ",
+                       "Loading restores all those settings — but never touches your data, ",
+                       "sample selection, or time filter."),
+                     fluidRow(
+                       column(6, downloadButton("saveSettings",  "Save Settings",  style = "width:100%")),
+                       column(6, actionButton("clearSettings", "Clear & Reset",
+                                              icon  = icon("times"),
+                                              style = "width:100%;background:#dc3545;color:white;border:none;"))
+                     ),
+                     br(),
+                     fileInput("loadSettings", "Load Settings File",
+                               accept = c("application/json", ".json")),
+                     uiOutput("settings_status_ui")
+                 )
                    )
                  )
-                 
+
     ), # end sidebarPanel
     
     mainPanel(width = 9,
@@ -2934,7 +2981,12 @@ server <- function(input, output, session) {
                    "sample","Sample","group","Group")
     if (any(potential %in% colnames(data))) return(TRUE)
     if (ncol(data) <= 4) {
-      vd <- sapply(data, function(x) length(unique(x)) / nrow(data))
+      # Only NON-NUMERIC columns can be grouping candidates: a numeric OD
+      # column with repeated values (e.g. a flat/constant control) must not
+      # flip a small wide file into long format.
+      nn <- !vapply(data, is.numeric, logical(1))
+      if (!any(nn)) return(FALSE)
+      vd <- sapply(data[nn], function(x) length(unique(x)) / nrow(data))
       return(any(vd < 0.3 & vd > 0))
     }
     FALSE
@@ -2994,7 +3046,10 @@ server <- function(input, output, session) {
                      "sample","Sample","group","Group")
       found     <- potential[potential %in% colnames(data)]
       group_col <- if (length(found) > 0) found[1] else {
-        dv    <- sapply(data, function(x) length(unique(x)) / nrow(data))
+        # prefer non-numeric columns as the grouping candidate (numeric
+        # columns with repeated values are usually measurements, not groups)
+        nn    <- names(data)[!vapply(data, is.numeric, logical(1))]
+        dv    <- sapply(data[nn], function(x) length(unique(x)) / nrow(data))
         cands <- setdiff(names(which(dv < 0.3 & dv > 0)), rv$time_col)
         if (length(cands)) cands[1] else setdiff(colnames(data), rv$time_col)[1]
       }
