@@ -183,7 +183,10 @@ METRIC_DEFINITIONS <- c(
   mu_max          = paste0("Maximum specific growth rate: the largest centered ",
                            "rolling-window regression slope of ln(OD) against time ",
                            "(window = the metrics smoothing setting, default 5 points); ",
-                           "NA when the curve never grows"),
+                           "NA when the curve never grows. ",
+                           "Note: Blazanin et al. (PNAS 2025) found exponential growth rate/decline ",
+                           "rate uninformative for phage infectivity; prefer time of peak density ",
+                           "and extinction time."),
   doubling_time   = "ln(2) / mu_max; NA when there is no growth phase",
   lag_phase       = paste0("End of lag: the first time at which the rolling ln(OD) ",
                            "slope reaches 10% of mu_max"),
@@ -192,16 +195,57 @@ METRIC_DEFINITIONS <- c(
                            "from the peak exceeds 5% of the peak OD; NA if the curve ",
                            "never declines that far"),
   lysis_rate      = paste0("Linear-regression slope of the mean curve from the peak to ",
-                           "the deepest post-peak point (negative = decline)"),
+                           "the deepest post-peak point (negative = decline). ",
+                           "Note: Blazanin et al. (PNAS 2025) found exponential growth rate/decline ",
+                           "rate uninformative for phage infectivity; prefer time of peak density ",
+                           "and extinction time."),
   od_drop         = "Peak OD minus the post-peak minimum (absolute decline)",
   residual_od     = "Post-peak minimum OD (residual OD after lysis)",
   recovery_slope  = paste0("Linear-regression slope from the post-peak trough to the end ",
                            "of the curve; reported only when positive (regrowth / recovery)"),
+  first_peak_od   = paste0("OD at the FIRST local maximum of the lightly smoothed curve ",
+                           "(centered rolling mean, window = min(3, n)) whose topographic ",
+                           "prominence is at least 5% of the curve's range; falls back to the ",
+                           "global maximum when no interior local maximum qualifies. A regrowing ",
+                           "culture's global peak is often the SECOND peak, so this is not ",
+                           "simply which.max. (recommended for phage infectivity - Blazanin ",
+                           "et al. PNAS 2025)"),
+  t_first_peak    = paste0("Time of the first prominent local maximum (see first_peak_od). ",
+                           "(recommended for phage infectivity - Blazanin et al. PNAS 2025)"),
+  extinction_time = paste0("First time the curve falls BELOW the extinction threshold set on ",
+                           "the Analysis tab (default 0.05 OD), linearly interpolated between ",
+                           "the two bracketing time points; NA when the threshold is never ",
+                           "crossed. (recommended for phage infectivity - Blazanin et al. ",
+                           "PNAS 2025)"),
+  centroid_x      = paste0("Time coordinate of the centroid (center of mass) of the area under ",
+                           "the OD-time curve, computed from EXACT per-trapezoid strip centroids ",
+                           "(not the midpoint approximation) and area-weighted across strips; ",
+                           "NA when the total area is not positive. Hosseini et al., ",
+                           "Communications Biology 7:673 (2024)."),
+  centroid_y      = paste0("OD coordinate of the centroid of the area under the OD-time curve, ",
+                           "from the same exact trapezoid-strip decomposition as centroid_x. ",
+                           "Hosseini et al., Communications Biology 7:673 (2024)."),
   relative_growth    = "auc / auc of the reference (control) sample",
-  infection_strength = "1 - auc / auc of the reference (control) sample",
+  infection_strength = paste0("Infection strength (full-run AUC ratio; equivalent to ",
+                           "PhageScore/100): 1 - auc / auc of the reference (control) sample, ",
+                           "integrated over the WHOLE run. Compare with local_virulence, which ",
+                           "integrates only to the reference's stationary-phase onset."),
   relative_mu_max    = "mu_max / mu_max of the reference (control) sample",
   relative_max_od    = "max_od / max_od of the reference (control) sample",
-  lysis_onset_delta  = "lysis_time - lag_phase (how long after growth starts lysis begins)"
+  lysis_onset_delta  = "lysis_time - lag_phase (how long after growth starts lysis begins)",
+  centroid_index     = paste0("Centroid Index: 1 - (centroid_x * centroid_y) / ",
+                           "(mean reference centroid_x * centroid_y product). CI = 1 means maximum ",
+                           "efficacy, CI = 0 means none, CI < 0 indicates resistance / overgrowth. ",
+                           "Sensitive to late regrowth that whole-run AUC ratios miss. ",
+                           "Hosseini et al., Communications Biology 7:673 (2024)."),
+  local_virulence    = paste0("Storms local virulence: 1 - A_i/A_0 with both areas integrated ",
+                           "from 0 to the reference culture's stationary-phase onset (t_stat). ",
+                           "Differs from infection_strength, which integrates the full run. ",
+                           "Requires blanked data; not comparable across different hosts/media. ",
+                           "Storms et al., PHAGE 1(1):27-36 (2020)."),
+  t_stat_used        = paste0("Integration cut-off actually used for local_virulence: the ",
+                           "reference culture's stationary-phase onset (auto) or the manual ",
+                           "override entered on the Analysis tab")
 )
 
 fmt_sig <- function(x, digits = 5) {
@@ -264,6 +308,12 @@ build_html_report <- function(meta, img_b64, stats_df, metrics_df) {
     paste0("<h2>Experiment notebook</h2>",
            html_table(meta$notebook_df, class = "wrap prov")) else ""
 
+  qc_html <- paste0(
+    "<h2>Quality control</h2>",
+    if (is.null(meta$qc_df) || nrow(meta$qc_df) == 0)
+      "<p><em>No flags &mdash; all checks passed.</em></p>"
+    else html_table(meta$qc_df, class = "wrap"))
+
   font_pt <- meta$font_pt %||% 14
 
   paste0(
@@ -303,6 +353,7 @@ notes_html,
 <tr><td>Time filtering</td><td>",   html_escape(meta$filter_txt),  "</td></tr>
 <tr><td>Error display</td><td>",    html_escape(meta$error_txt),   "</td></tr>
 </table></div>",
+qc_html,
 notebook_html,
 "<h2>Figure</h2>
 <img class='figure' src='data:image/png;base64,", img_b64, "' alt='OD growth curve figure'/>
@@ -355,6 +406,23 @@ build_pdf_report <- function(file, meta, plot_obj, stats_df, metrics_df,
     grid::grid.text(paste0("Notes:\n", paste(strwrap(meta$notes, 90), collapse = "\n")),
                     y = 0.40, just = "top",
                     gp = grid::gpar(fontsize = 10 * fscale, lineheight = 1.3, col = "grey20"))
+  }
+
+  # -- Quality control page --
+  grid::grid.newpage()
+  grid::grid.text("Quality control", y = 0.97,
+                  gp = grid::gpar(fontsize = 13 * fscale, fontface = "bold"))
+  if (is.null(meta$qc_df) || nrow(meta$qc_df) == 0) {
+    grid::grid.text("No flags - all checks passed.", y = 0.5,
+                    gp = grid::gpar(fontsize = 12 * fscale, col = "grey20"))
+  } else {
+    qc <- as.data.frame(meta$qc_df, stringsAsFactors = FALSE)
+    qc$detail <- vapply(as.character(qc$detail), function(s)
+      paste(strwrap(s, 60), collapse = "\n"), character(1), USE.NAMES = FALSE)
+    g <- gridExtra::tableGrob(qc, rows = NULL, theme = tt)
+    gw <- grid::convertWidth(sum(g$widths), "npc", valueOnly = TRUE)
+    vp <- if (gw > 0.98) grid::viewport(y = 0.5, width = 0.98 / gw) else grid::viewport(y = 0.5)
+    grid::pushViewport(vp); grid::grid.draw(g); grid::popViewport()
   }
 
   # ── Experiment notebook page (only when fields were filled in) ──
@@ -438,7 +506,10 @@ detect_replicate_column <- function(data, time_col, group_col, value_col) {
 make_demo_data <- function() {
   set.seed(42)
   times <- seq(0, 180, by = 15)
-  grow  <- function(t, k = 0.028, y0 = 0.05, cap = 1.4)
+  # k chosen so the uninfected control reaches stationary phase within the
+  # run — this makes the Storms local-virulence window (t_stat) meaningful
+  # on the demo data instead of falling back to the full run
+  grow  <- function(t, k = 0.05, y0 = 0.05, cap = 1.4)
     cap / (1 + ((cap - y0) / y0) * exp(-k * t))
   lyse  <- function(t, t_lysis, y_pre, rate = 0.06)
     ifelse(t < t_lysis, y_pre(t), pmax(y_pre(t_lysis) * exp(-rate * (t - t_lysis)), 0.02))
@@ -477,7 +548,8 @@ infer_wide_replicates <- function(data, time_col) {
 # Works with the app's existing prepare_plot_data() output (time, variable,
 # mean_value columns).  Returns one row per sample.
 
-calculate_growth_metrics <- function(plot_data, smooth_window = 5) {
+calculate_growth_metrics <- function(plot_data, smooth_window = 5,
+                                     extinction_threshold = 0.05) {
   if (is.null(plot_data) || nrow(plot_data) == 0) return(NULL)
   
   has_rep <- "replicate" %in% names(plot_data)
@@ -595,6 +667,88 @@ calculate_growth_metrics <- function(plot_data, smooth_window = 5) {
         }
       }
       
+      # -- Centroid of the area under the curve (Hosseini et al. 2024) ---------
+      # EXACT trapezoid-strip centroids (not the midpoint approximation): each
+      # consecutive pair of points defines a trapezoid whose own centroid is
+      # known in closed form; the curve centroid is the area-weighted mean of
+      # those strip centroids.
+      centroid_x <- NA_real_
+      centroid_y <- NA_real_
+      if (n_pts >= 2) {
+        h_s <- diff(t_vec)
+        a_s <- head(od_vec, -1)
+        b_s <- tail(od_vec, -1)
+        A_s <- h_s * (a_s + b_s) / 2
+        ab  <- a_s + b_s
+        xbar_s <- ifelse(ab == 0,
+                         head(t_vec, -1) + h_s / 2,
+                         head(t_vec, -1) + h_s * (a_s + 2 * b_s) / (3 * ab))
+        ybar_s <- ifelse(ab == 0,
+                         0,
+                         (a_s^2 + a_s * b_s + b_s^2) / (3 * ab))
+        A_tot <- sum(A_s, na.rm = TRUE)
+        if (is.finite(A_tot) && A_tot > 0) {
+          centroid_x <- sum(xbar_s * A_s, na.rm = TRUE) / A_tot
+          centroid_y <- sum(ybar_s * A_s, na.rm = TRUE) / A_tot
+        }
+      }
+
+      # -- First prominent peak (Blazanin et al. PNAS 2025) -------------------
+      # A regrowing culture's GLOBAL maximum can be the SECOND peak, so the
+      # first peak is found by local-maximum search on a lightly smoothed
+      # curve, keeping only maxima with prominence >= 5% of the curve range.
+      first_peak_od <- max_od
+      t_first_peak  <- time_max_od
+      pk_win <- min(3, n_pts)
+      sm_vec <- od_vec
+      if (n_pts >= 3 && pk_win >= 3) {
+        sm_try <- tryCatch(
+          rollapply(od_vec, width = pk_win, FUN = mean, align = "center", fill = NA),
+          error = function(e) rep(NA_real_, n_pts))
+        sm_vec <- ifelse(is.finite(sm_try), sm_try, od_vec)
+      }
+      if (n_pts >= 3) {
+        sm_range <- diff(range(sm_vec, na.rm = TRUE))
+        prom_min <- 0.05 * sm_range
+        cand <- which(sm_vec[2:(n_pts - 1)] >  sm_vec[1:(n_pts - 2)] &
+                      sm_vec[2:(n_pts - 1)] >= sm_vec[3:n_pts]) + 1L
+        chosen <- NA_integer_
+        for (pk in cand) {
+          p_val <- sm_vec[pk]
+          # walk out both ways until a higher point (or the curve end) is met;
+          # the prominence is the drop to the shallower of the two saddles
+          li <- pk
+          while (li > 1 && sm_vec[li - 1] <= p_val) li <- li - 1
+          ri <- pk
+          while (ri < n_pts && sm_vec[ri + 1] <= p_val) ri <- ri + 1
+          left_min  <- min(sm_vec[li:pk], na.rm = TRUE)
+          right_min <- min(sm_vec[pk:ri], na.rm = TRUE)
+          prom <- p_val - max(left_min, right_min)
+          if (is.finite(prom) && prom >= prom_min) { chosen <- pk; break }
+        }
+        if (!is.na(chosen)) {
+          first_peak_od <- od_vec[chosen]
+          t_first_peak  <- t_vec[chosen]
+        }
+      }
+
+      # -- Extinction time (Blazanin et al. PNAS 2025) ------------------------
+      extinction_time <- NA_real_
+      thr <- suppressWarnings(as.numeric(extinction_threshold))
+      if (length(thr) == 1 && is.finite(thr) && n_pts >= 1) {
+        if (od_vec[1] < thr) {
+          extinction_time <- t_vec[1]
+        } else if (n_pts >= 2) {
+          cross <- which(od_vec[-1] < thr & od_vec[-n_pts] >= thr)
+          if (length(cross) > 0) {
+            j  <- cross[1]
+            y0 <- od_vec[j];     y1 <- od_vec[j + 1]
+            x0 <- t_vec[j];      x1 <- t_vec[j + 1]
+            extinction_time <- if (y0 == y1) x1 else x0 + (x1 - x0) * (y0 - thr) / (y0 - y1)
+          }
+        }
+      }
+
       out <- tibble(
         initial_od     = initial_od,
         max_od         = max_od,
@@ -609,7 +763,12 @@ calculate_growth_metrics <- function(plot_data, smooth_window = 5) {
         lysis_rate     = lysis_rate,
         od_drop        = od_drop,
         residual_od    = residual_od,
-        recovery_slope = recovery_slope
+        recovery_slope = recovery_slope,
+        first_peak_od   = first_peak_od,
+        t_first_peak    = t_first_peak,
+        extinction_time = extinction_time,
+        centroid_x      = centroid_x,
+        centroid_y      = centroid_y
       )
       
       if (has_rep) {
@@ -660,13 +819,24 @@ calculate_infection_metrics <- function(metrics_df, ref_sample) {
   ref_auc    <- mean(ref_row$auc,    na.rm = TRUE)
   ref_mu_max <- mean(ref_row$mu_max, na.rm = TRUE)
   ref_max_od <- mean(ref_row$max_od, na.rm = TRUE)
-  
+
+  # Centroid Index (Hosseini et al. 2024) needs the centroid columns; older
+  # saved metric tables may not carry them.
+  has_centroid <- all(c("centroid_x", "centroid_y") %in% names(metrics_df))
+  # The denominator is the MEAN of the reference curves' centroid_x*centroid_y
+  # products, not the product of the two column means. With a single reference
+  # curve the two are identical; with replicates only this form makes the
+  # reference's own centroid_index average to exactly 0 (E[XY] != E[X]E[Y]),
+  # matching how relative_growth / infection_strength already behave.
+  ref_cprod <- if (has_centroid)
+    mean(ref_row$centroid_x * ref_row$centroid_y, na.rm = TRUE) else NA_real_
+
   # NOTE: these must NOT use ifelse() — its result takes the length of the
   # condition, and with a length-1 condition every sample would silently
   # receive the FIRST row's relative value (bug fixed 2026-08-19; previously
   # relative_growth / infection_strength / relative_mu_max / relative_max_od
   # were wrong for all but the alphabetically-first sample).
-  metrics_df %>%
+  out <- metrics_df %>%
     mutate(
       relative_growth    = if (is.finite(ref_auc)    && ref_auc    > 0) auc / ref_auc         else NA_real_,
       infection_strength = if (is.finite(ref_auc)    && ref_auc    > 0) 1 - (auc / ref_auc)   else NA_real_,
@@ -674,6 +844,177 @@ calculate_infection_metrics <- function(metrics_df, ref_sample) {
       relative_max_od    = if (is.finite(ref_max_od) && ref_max_od > 0) max_od / ref_max_od   else NA_real_,
       lysis_onset_delta  = lysis_time - lag_phase
     )
+
+  # Centroid Index: 1 - (cx * cy) / (ref_cx * ref_cy). Same no-ifelse() rule as
+  # above -- a length-1 condition would recycle the first row's value.
+  if (has_centroid) {
+    out <- out %>%
+      mutate(centroid_index = if (is.finite(ref_cprod) && ref_cprod > 0)
+                                1 - (centroid_x * centroid_y) / ref_cprod
+                              else NA_real_)
+  }
+  out
+}
+
+# -- Storms local virulence (PHAGE 1(1):27-36, 2020) --------------------------
+# The classic "virulence index" area ratio, integrated only up to the onset of
+# stationary phase in the REFERENCE culture -- unlike infection_strength, which
+# integrates the whole run. Operates on prepare_metrics_data() output
+# (time, variable, mean_value[, replicate]) so it can work per replicate.
+calculate_local_virulence <- function(pd, ref_sample, smooth_window = 5,
+                                      t_stat_override = NULL) {
+  if (is.null(pd) || nrow(pd) == 0 || is.null(ref_sample)) return(NULL)
+  if (!ref_sample %in% pd$variable) return(NULL)
+
+  has_rep <- "replicate" %in% names(pd)
+
+  # -- reference mean curve (average over replicates at each time) -----------
+  ref_curve <- pd %>%
+    filter(variable == ref_sample) %>%
+    group_by(time) %>%
+    summarise(od = mean(mean_value, na.rm = TRUE), .groups = "drop") %>%
+    filter(is.finite(time) & is.finite(od)) %>%
+    arrange(time)
+  if (nrow(ref_curve) < 2) return(NULL)
+
+  t_ref  <- ref_curve$time
+  od_ref <- ref_curve$od
+  n_ref  <- length(t_ref)
+
+  # -- t_stat: onset of stationary phase in the reference --------------------
+  # Same centered rolling regression of ln(OD) as calculate_growth_metrics().
+  t_stat <- t_ref[n_ref]
+  win <- min(smooth_window, n_ref)
+  if (n_ref >= win && win >= 3) {
+    log_od <- log(pmax(od_ref, 1e-9))
+    roll_slopes <- tryCatch({
+      rollapply(seq_len(n_ref), width = win, FUN = function(idx) {
+        tt <- t_ref[idx]
+        ll <- log_od[idx]
+        if (diff(range(tt)) == 0) return(0)
+        coef(lm(ll ~ tt))[2]
+      }, align = "center", fill = NA)
+    }, error = function(e) rep(NA_real_, n_ref))
+
+    valid_slopes <- which(is.finite(roll_slopes) & roll_slopes > 1e-10)
+    if (length(valid_slopes) > 0) {
+      mu_max_ref <- max(roll_slopes[valid_slopes], na.rm = TRUE)
+      mu_idx     <- valid_slopes[which.max(roll_slopes[valid_slopes])]
+      after <- which(seq_len(n_ref) > mu_idx &
+                     is.finite(roll_slopes) &
+                     roll_slopes < 0.10 * mu_max_ref)
+      if (length(after) > 0) t_stat <- t_ref[after[1]]
+    }
+  }
+  if (!is.null(t_stat_override)) {
+    ov <- suppressWarnings(as.numeric(t_stat_override))
+    if (length(ov) == 1 && is.finite(ov)) t_stat <- ov
+  }
+
+  # -- trapezoid integral up to t_cut, interpolating a point AT t_cut --------
+  area_to <- function(tt, yy, t_cut) {
+    ok <- is.finite(tt) & is.finite(yy)
+    tt <- tt[ok]; yy <- yy[ok]
+    o  <- order(tt); tt <- tt[o]; yy <- yy[o]
+    if (length(tt) < 2) return(NA_real_)
+    keep <- which(tt <= t_cut)
+    if (length(keep) == 0) return(NA_real_)
+    k   <- max(keep)
+    tk  <- tt[seq_len(k)]
+    yk  <- yy[seq_len(k)]
+    if (k < length(tt) && tt[k] < t_cut) {
+      frac <- (t_cut - tt[k]) / (tt[k + 1] - tt[k])
+      tk <- c(tk, t_cut)
+      yk <- c(yk, yy[k] + frac * (yy[k + 1] - yy[k]))
+    }
+    if (length(tk) < 2) return(NA_real_)
+    sum(diff(tk) * (head(yk, -1) + tail(yk, -1)) / 2)
+  }
+
+  A0 <- area_to(t_ref, od_ref, t_stat)
+
+  grp_cols <- if (has_rep) c("variable", "replicate") else "variable"
+  res <- pd %>%
+    group_by(across(all_of(grp_cols))) %>%
+    do({
+      d  <- .
+      Ai <- area_to(d$time, d$mean_value, t_stat)
+      lv <- if (is.finite(A0) && A0 > 0 && is.finite(Ai)) 1 - Ai / A0 else NA_real_
+      o  <- tibble(local_virulence = lv, t_stat_used = t_stat)
+      if (has_rep) o$replicate <- d$replicate[1]
+      o
+    }) %>%
+    ungroup() %>%
+    rename(sample = variable)
+
+  keep_cols <- if (has_rep) c("sample", "replicate", "local_virulence", "t_stat_used")
+               else c("sample", "local_virulence", "t_stat_used")
+  as.data.frame(res[, keep_cols, drop = FALSE], stringsAsFactors = FALSE)
+}
+
+# -- Quality-control flags ----------------------------------------------------
+# Cheap sanity checks on prepare_plot_data()-style data (time, variable,
+# mean_value, n...). Returns one row per problem found; zero rows when clean.
+qc_flags <- function(pd, ref_sample = NULL, od_cap = 1.0) {
+  empty <- data.frame(sample = character(0), flag = character(0),
+                      severity = character(0), detail = character(0),
+                      stringsAsFactors = FALSE)
+  if (is.null(pd) || nrow(pd) == 0) return(empty)
+  if (!all(c("time", "variable", "mean_value") %in% names(pd))) return(empty)
+
+  cap <- suppressWarnings(as.numeric(od_cap))
+  if (length(cap) != 1 || !is.finite(cap)) cap <- 1.0
+
+  rows <- list()
+  add <- function(s, f, sev, det)
+    rows[[length(rows) + 1]] <<- data.frame(sample = s, flag = f, severity = sev,
+                                            detail = det, stringsAsFactors = FALSE)
+
+  for (s in unique(as.character(pd$variable))) {
+    d  <- pd[as.character(pd$variable) == s, , drop = FALSE]
+    d  <- d[is.finite(d$time) & is.finite(d$mean_value), , drop = FALSE]
+    if (nrow(d) == 0) next
+    d  <- d[order(d$time), , drop = FALSE]
+    yy <- d$mean_value
+    tt <- d$time
+
+    if (max(yy) > cap)
+      add(s, "CEILING", "warn",
+          paste0("OD exceeds ", format(cap, trim = TRUE),
+                 "; plate-reader linearity is lost above ~0.5-1.0 - consider ",
+                 "dilution or calibration (max = ", signif(max(yy), 4), ")"))
+
+    if (any(yy < 0))
+      add(s, "NEGATIVE", "error",
+          paste0("negative OD; blank over-subtraction? (min = ",
+                 signif(min(yy), 4), ")"))
+
+    if (length(tt) >= 3) {
+      dts <- diff(tt)
+      dts <- dts[is.finite(dts) & dts > 0]
+      if (length(dts) >= 2) {
+        tab   <- table(round(dts, 6))
+        modal <- as.numeric(names(tab)[which.max(tab)])
+        gaps  <- which(diff(tt) > 3 * modal)
+        if (length(gaps) > 0)
+          add(s, "GAP", "warn",
+              paste0("acquisition gap at t=",
+                     paste(signif(tt[gaps], 6), collapse = ", "),
+                     "; derivative/timing metrics unreliable across it ",
+                     "(typical interval ", signif(modal, 6), ")"))
+      }
+    }
+
+    if (!is.null(ref_sample) && identical(s, as.character(ref_sample)) &&
+        (max(yy) - min(yy)) < 0.1)
+      add(s, "FLAT_REFERENCE", "error",
+          paste0("reference barely grew; all ratio metrics (virulence, CI, ",
+                 "infection strength) are invalid (range = ",
+                 signif(max(yy) - min(yy), 4), ")"))
+  }
+
+  if (length(rows) == 0) return(empty)
+  do.call(rbind, rows)
 }
 
 # ── Replicate Summary ─────────────────────────────────────────────────────────
@@ -685,8 +1026,11 @@ summarise_metrics <- function(metrics_df) {
                    "mu_max", "doubling_time", "lag_phase", "stat_phase_dur",
                    "lysis_time", "lysis_rate", "od_drop", "residual_od",
                    "recovery_slope",
+                   "first_peak_od", "t_first_peak", "extinction_time",
+                   "centroid_x", "centroid_y",
                    "relative_growth", "infection_strength", "relative_mu_max",
-                   "relative_max_od", "lysis_onset_delta")
+                   "relative_max_od", "lysis_onset_delta",
+                   "centroid_index", "local_virulence")
   present_cols <- intersect(metric_cols, names(metrics_df))
   
   long_df <- metrics_df %>%
@@ -802,12 +1146,23 @@ metric_labels <- c(
   od_drop            = "OD Drop Magnitude",
   residual_od        = "Residual OD (post-lysis)",
   recovery_slope     = "Recovery Slope (post-lysis)",
+  first_peak_od      = "First Peak OD (recommended for phage infectivity - Blazanin et al. PNAS 2025)",
+  t_first_peak       = "Time of First Peak (recommended for phage infectivity - Blazanin et al. PNAS 2025)",
+  extinction_time    = "Extinction Time (recommended for phage infectivity - Blazanin et al. PNAS 2025)",
+  centroid_x         = "Centroid Time (AUC centroid x)",
+  centroid_y         = "Centroid OD (AUC centroid y)",
   relative_growth    = "Relative Growth (vs reference)",
-  infection_strength = "Infection Strength",
+  infection_strength = "Infection strength (full-run AUC ratio; equivalent to PhageScore/100)",
   relative_mu_max    = "Relative μmax (vs reference)",
   relative_max_od    = "Relative Max OD (vs reference)",
-  lysis_onset_delta  = "Lysis Onset Δ from Lag"
+  lysis_onset_delta  = "Lysis Onset Δ from Lag",
+  centroid_index     = "Centroid Index (vs reference)",
+  local_virulence    = "Local Virulence (Storms, to reference t_stat)"
 )
+
+# The spec refers to this lookup as METRIC_LABELS; keep an alias so both names
+# resolve to the same table.
+METRIC_LABELS <- metric_labels
 
 core_metric_choices <- c(
   "Initial OD"             = "initial_od",
@@ -818,7 +1173,11 @@ core_metric_choices <- c(
   "Max Growth Rate"        = "mu_max",
   "Doubling Time"          = "doubling_time",
   "Lag Phase"              = "lag_phase",
-  "Stationary Phase Dur."  = "stat_phase_dur"
+  "Stationary Phase Dur."  = "stat_phase_dur",
+  "First Peak OD"          = "first_peak_od",
+  "Time of First Peak"     = "t_first_peak",
+  "Centroid Time"          = "centroid_x",
+  "Centroid OD"            = "centroid_y"
 )
 
 lysis_metric_choices <- c(
@@ -826,7 +1185,8 @@ lysis_metric_choices <- c(
   "Lysis Rate"             = "lysis_rate",
   "OD Drop Magnitude"      = "od_drop",
   "Residual OD"            = "residual_od",
-  "Recovery Slope"         = "recovery_slope"
+  "Recovery Slope"         = "recovery_slope",
+  "Extinction Time"        = "extinction_time"
 )
 
 infection_metric_choices <- c(
@@ -834,7 +1194,9 @@ infection_metric_choices <- c(
   "Relative Growth"        = "relative_growth",
   "Relative μmax"          = "relative_mu_max",
   "Relative Max OD"        = "relative_max_od",
-  "Lysis Onset Δ Lag"       = "lysis_onset_delta"
+  "Lysis Onset Δ Lag"       = "lysis_onset_delta",
+  "Centroid Index"         = "centroid_index",
+  "Local Virulence (Storms)" = "local_virulence"
 )
 
 all_metric_choices <- c(
@@ -951,6 +1313,7 @@ ui <- fluidPage(
       .settings-status { padding:8px 12px; border-radius:4px; font-size:.85em; margin-top:6px; }
       .settings-status.ok   { background:#d4edda; color:#155724; border:1px solid #c3e6cb; }
       .settings-status.warn { background:#fff3cd; color:#856404; border:1px solid #ffeeba; }
+      .settings-status.error { background:#f8d7da; color:#721c24; border:1px solid #f5c6cb; }
       .match-list { margin:4px 0 0 0; padding-left:16px; }
       .excl-preview {
         background:#fff3cd; color:#856404; padding:6px 10px;
@@ -1454,6 +1817,15 @@ ui <- fluidPage(
                                        p(class = "wit-label", style="padding-left:4px;",
                                          "Step 1: Calculate metrics. Step 2: Run stats. Step 3: Publish."),
 
+                                       # Quality control flags
+                                       div(style = "padding:0 4px 4px;",
+                                           div(style = "display:inline-block;width:170px;vertical-align:top;",
+                                               numericInput("qc_od_cap", "QC: OD linearity cap:",
+                                                            value = 1, min = 0.1, max = 4, step = 0.1)),
+                                           div(style = "display:inline-block;width:calc(100% - 190px);vertical-align:top;padding-left:12px;",
+                                               uiOutput("qc_flags_ui"))
+                                       ),
+
                                        # Growth Curve Metrics
                                        div(class = "panel-section",
                                            h4("Growth Curve Metrics", class = "panel-title"),
@@ -1476,16 +1848,24 @@ ui <- fluidPage(
                                                     numericInput("metrics_smooth_window", "Smoothing Window:",
                                                                  value = 5, min = 3, max = 20, step = 1)),
                                              column(3,
+                                                    numericInput("extinction_threshold", "Extinction Threshold (OD):",
+                                                                 value = 0.05, min = 0.001, step = 0.01)),
+                                             column(2,
                                                     actionButton("calc_metrics", "Calculate Metrics",
                                                                  icon = icon("calculator"),
                                                                  style = "margin-top:25px;background:#2C3E50;color:white;border:none;")),
-                                             column(3,
-                                                    downloadButton("download_metrics_csv", "Download Metrics CSV",
+                                             column(2,
+                                                    downloadButton("download_metrics_csv", "Metrics CSV",
                                                                    style = "margin-top:25px;width:100%;")),
-                                             column(3,
-                                                    downloadButton("download_all_stats", "Download All Stats CSV",
+                                             column(2,
+                                                    downloadButton("download_all_stats", "All Stats CSV",
                                                                    style = "margin-top:25px;width:100%;background:#E67E22;color:white;border:none;"))
                                            ),
+                                           p(style = "font-size:.8em;color:#555;margin-top:-6px;",
+                                             "Extinction time = the first time the curve drops below this OD ",
+                                             "(linearly interpolated). Together with the time of the first peak ",
+                                             "these are the metrics Blazanin et al. (PNAS 2025) recommend for ",
+                                             "phage infectivity."),
                                            br(),
                                            DT::DTOutput("metrics_table")
                                        ),
@@ -1500,17 +1880,25 @@ ui <- fluidPage(
                                              "Infection Strength = 1 \u2212 (AUC\u209b\u2090\u2098\u209a\u2097\u2091 / AUC\u1d63\u2091f). ",
                                              "Values > 0 mean growth suppression; < 0 means enhanced growth."),
                                            fluidRow(
-                                             column(4,
+                                             column(3,
                                                     selectInput("ref_sample", "Reference (Control) Sample:",
                                                                 choices = character(0))),
-                                             column(4,
+                                             column(3,
+                                                    numericInput("t_stat_override", "t_stat override (blank = auto):",
+                                                                 value = NA, min = 0, step = 1)),
+                                             column(3,
                                                     actionButton("calc_infection", "Compute Infection Metrics",
                                                                  icon = icon("virus"),
                                                                  style = "margin-top:25px;background:#C0392B;color:white;border:none;")),
-                                             column(4,
+                                             column(3,
                                                     downloadButton("download_infection_csv", "Download CSV",
                                                                    style = "margin-top:25px;width:100%;"))
                                            ),
+                                           p(style = "font-size:.8em;color:#555;margin-top:-6px;",
+                                             "Storms virulence integration window: auto = onset of stationary ",
+                                             "phase in the reference."),
+                                           div(style = "font-size:.82em;color:#2C3E50;font-weight:600;",
+                                               textOutput("local_virulence_tstat", inline = TRUE)),
                                            br(),
                                            DT::DTOutput("infection_table")
                                        ),
@@ -2947,7 +3335,9 @@ server <- function(input, output, session) {
       gif_height            = 600,        x_extra_ticks          = "",
       report_title          = "Lysis Curve Analysis Report",
       report_author         = "",         report_notes           = "",
-      report_font_size      = 14
+      report_font_size      = 14,
+      extinction_threshold  = 0.05,       qc_od_cap              = 1,
+      t_stat_override       = NA_real_
     )
     for (nm in names(defs)) {
       tryCatch({
@@ -5236,8 +5626,41 @@ server <- function(input, output, session) {
     metrics_inf_raw = NULL,
     metrics_long   = NULL,
     stats_result   = NULL,
-    deriv_data     = NULL
+    deriv_data     = NULL,
+    t_stat_used    = NULL
   )
+
+  # -- Quality-control flags ---------------------------------------------------
+  qc_flags_current <- reactive({
+    pd <- tryCatch(prepare_plot_data(), error = function(e) NULL)
+    if (is.null(pd) || nrow(pd) == 0) return(NULL)
+    ref <- input$ref_sample
+    if (is.null(ref) || !nzchar(ref)) ref <- NULL
+    tryCatch(qc_flags(pd, ref_sample = ref, od_cap = input$qc_od_cap %||% 1),
+             error = function(e) NULL)
+  })
+
+  output$qc_flags_ui <- renderUI({
+    qc <- qc_flags_current()
+    if (is.null(qc) || nrow(qc) == 0) return(NULL)
+    tagList(lapply(seq_len(nrow(qc)), function(i) {
+      cls <- if (identical(qc$severity[i], "error")) "settings-status error"
+             else "settings-status warn"
+      div(class = cls,
+          tags$b(paste0(qc$flag[i], " - ", qc$sample[i], ": ")),
+          qc$detail[i])
+    }))
+  })
+
+  output$local_virulence_tstat <- renderText({
+    ts <- rv_analysis$t_stat_used
+    if (is.null(ts) || !is.finite(ts)) return("")
+    paste0("Storms local virulence integrated from 0 to t_stat = ",
+           signif(ts, 6),
+           if (!is.null(input$t_stat_override) &&
+               length(input$t_stat_override) == 1 &&
+               is.finite(input$t_stat_override)) " (manual override)" else " (auto)")
+  })
   
   observe({
     samps <- input$selected_samples
@@ -5251,7 +5674,9 @@ server <- function(input, output, session) {
     pd <- tryCatch(prepare_metrics_data(), error = function(e) NULL)
     if (is.null(pd) || nrow(pd) == 0) return()
     withProgress(message = "Calculating growth metrics...", value = 0.2, {
-      m_raw <- calculate_growth_metrics(pd, smooth_window = input$metrics_smooth_window)
+      m_raw <- calculate_growth_metrics(
+        pd, smooth_window = input$metrics_smooth_window,
+        extinction_threshold = input$extinction_threshold %||% 0.05)
       setProgress(0.6, detail = "Computing derivatives...")
       rv_analysis$deriv_data <- calculate_derivative(prepare_plot_data(), smooth_window = input$metrics_smooth_window)
       setProgress(0.8, detail = "Summarising...")
@@ -5277,6 +5702,40 @@ server <- function(input, output, session) {
   observeEvent(input$calc_infection, {
     req(rv_analysis$metrics_raw, input$ref_sample)
     m_inf_raw <- calculate_infection_metrics(rv_analysis$metrics_raw, input$ref_sample)
+
+    # -- Storms local virulence (needs the curves, not the metric table) ------
+    ov <- input$t_stat_override
+    if (!is.null(ov) && (length(ov) != 1 || !is.finite(ov))) ov <- NULL
+    lv <- tryCatch({
+      pd_lv <- prepare_metrics_data()
+      calculate_local_virulence(pd_lv, input$ref_sample,
+                                smooth_window = input$metrics_smooth_window %||% 5,
+                                t_stat_override = ov)
+    }, error = function(e) NULL)
+
+    if (!is.null(m_inf_raw) && !is.null(lv) && nrow(lv) > 0) {
+      join_by_cols <- if ("replicate" %in% names(m_inf_raw) && "replicate" %in% names(lv))
+        c("sample", "replicate") else "sample"
+      lv_join <- lv
+      # a per-sample join against per-replicate metrics must not multiply rows
+      if (identical(join_by_cols, "sample") && "replicate" %in% names(lv_join))
+        lv_join <- lv_join %>% group_by(sample) %>%
+          summarise(local_virulence = mean(local_virulence, na.rm = TRUE),
+                    t_stat_used = t_stat_used[1], .groups = "drop")
+      # match on a pasted key rather than left_join(), so the replicate column's
+      # storage type (factor / numeric / character) cannot break the join
+      key_of <- function(df) {
+        k <- as.character(df$sample)
+        if ("replicate" %in% join_by_cols) k <- paste(k, as.character(df$replicate), sep = "\r")
+        k
+      }
+      rv_analysis$t_stat_used <- lv_join$t_stat_used[1]
+      m_inf_raw$local_virulence <-
+        lv_join$local_virulence[match(key_of(m_inf_raw), key_of(lv_join))]
+    } else if (!is.null(m_inf_raw)) {
+      rv_analysis$t_stat_used <- NULL
+    }
+
     if (!is.null(m_inf_raw)) {
       m_inf_summary <- if ("replicate" %in% names(m_inf_raw)) {
         m_inf_raw %>% group_by(sample) %>%
@@ -5304,7 +5763,11 @@ server <- function(input, output, session) {
                        mu_max="μmax (h⁻¹)", doubling_time="Doubling Time",
                        lag_phase="Lag Phase", stat_phase_dur="Stationary Dur.",
                        lysis_time="Lysis Time", lysis_rate="Lysis Rate",
-                       od_drop="OD Drop", residual_od="Residual OD", recovery_slope="Recovery Slope")
+                       od_drop="OD Drop", residual_od="Residual OD", recovery_slope="Recovery Slope",
+                       first_peak_od="First Peak OD", t_first_peak="Time First Peak",
+                       extinction_time="Extinction Time",
+                       centroid_x="Centroid Time", centroid_y="Centroid OD",
+                       centroid_index="Centroid Index", local_virulence="Local Virulence")
     nms <- names(m)
     new_names <- ifelse(nms %in% names(display_names), display_names[nms], nms)
     datatable(m, colnames = new_names, rownames = FALSE,
@@ -5316,7 +5779,8 @@ server <- function(input, output, session) {
   output$infection_table <- DT::renderDT({
     req(rv_analysis$metrics_inf)
     m <- rv_analysis$metrics_inf
-    show_cols <- intersect(c("sample","infection_strength","relative_growth",
+    show_cols <- intersect(c("sample","infection_strength","local_virulence",
+                             "centroid_index","relative_growth",
                              "relative_mu_max","relative_max_od","lysis_onset_delta"), names(m))
     m <- m[, show_cols, drop = FALSE]
     num_cols <- names(m)[sapply(m, is.numeric)]
@@ -6218,7 +6682,9 @@ server <- function(input, output, session) {
       setting = c("X scale", "Y scale", "X label", "Y label", "Palette",
                   "Line thickness", "Points shown", "Point size",
                   "Export size (in)", "Export DPI",
-                  "Metrics smoothing window", "Reference sample"),
+                  "Metrics smoothing window", "Reference sample",
+                  "Extinction threshold (OD)", "QC OD linearity cap",
+                  "Storms t_stat override"),
       value = as.character(c(
         input$x_scale_type %||% "", input$y_scale_type %||% "",
         input$x_axis_label %||% "", input$y_axis_label %||% "",
@@ -6229,8 +6695,22 @@ server <- function(input, output, session) {
         input$export_dpi %||% "",
         input$metrics_smooth_window %||% 5,
         if (nzchar(input$ref_sample %||% "")) input$ref_sample
-        else "none (infection metrics omitted)")),
+        else "none (infection metrics omitted)",
+        input$extinction_threshold %||% 0.05,
+        input$qc_od_cap %||% 1,
+        if (!is.null(input$t_stat_override) &&
+            length(input$t_stat_override) == 1 &&
+            is.finite(input$t_stat_override)) input$t_stat_override
+        else "auto (reference stationary-phase onset)")),
       stringsAsFactors = FALSE)
+
+    # -- Quality-control flags (NULL-safe when there is no data) --------------
+    qc_df <- tryCatch({
+      pd_qc <- prepare_plot_data()
+      ref   <- input$ref_sample
+      if (is.null(ref) || !nzchar(ref)) ref <- NULL
+      qc_flags(pd_qc, ref_sample = ref, od_cap = input$qc_od_cap %||% 1)
+    }, error = function(e) NULL)
 
     # ── Experiment notebook: collect non-empty fields ───────────────────────
     en <- get_notes()
@@ -6285,6 +6765,7 @@ server <- function(input, output, session) {
          error_txt   = error_txt,
          settings_df = settings_df,
          notebook_df = notebook_df,
+         qc_df       = qc_df,
          font_pt     = input$report_font_size %||% 14)
   }
 
