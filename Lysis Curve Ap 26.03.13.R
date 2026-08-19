@@ -138,10 +138,13 @@ normalize_hex_color <- function(hex) {
 }
 
 rgb_to_hex <- function(r, g, b, a = 1) {
-  rgb(min(max(as.integer(r), 0), 255) / 255,
-      min(max(as.integer(g), 0), 255) / 255,
-      min(max(as.integer(b), 0), 255) / 255,
-      min(max(a, 0), 1))
+  rr <- min(max(as.integer(r), 0), 255) / 255
+  gg <- min(max(as.integer(g), 0), 255) / 255
+  bb <- min(max(as.integer(b), 0), 255) / 255
+  aa <- min(max(a, 0), 1)
+  # Only emit an 8-digit hex when alpha is actually < 1; a trailing "FF"
+  # breaks equality checks against the 6-digit preset colors.
+  if (aa >= 1) rgb(rr, gg, bb) else rgb(rr, gg, bb, aa)
 }
 
 parse_excluded_timepoints <- function(text, all_timepoints) {
@@ -169,6 +172,30 @@ detect_replicate_column <- function(data, time_col, group_col, value_col) {
   rep_cols <- setdiff(rep_cols, ignore_cols)
   if (length(rep_cols) > 0) return(rep_cols[1])
   NULL
+}
+
+# ── Demo dataset (used by the "Load Demo Data" button) ───────────────────────
+# Stacked-replicate wide format (time counter restarts per block), the
+# convention this app documents; exercises block detection + replicate modes.
+make_demo_data <- function() {
+  set.seed(42)
+  times <- seq(0, 180, by = 15)
+  grow  <- function(t, k = 0.028, y0 = 0.05, cap = 1.4)
+    cap / (1 + ((cap - y0) / y0) * exp(-k * t))
+  lyse  <- function(t, t_lysis, y_pre, rate = 0.06)
+    ifelse(t < t_lysis, y_pre(t), pmax(y_pre(t_lysis) * exp(-rate * (t - t_lysis)), 0.02))
+  noisy <- function(y) pmax(y * (1 + rnorm(length(y), 0, 0.04)), 0.01)
+  wt   <- function(t) grow(t)
+  # higher MOI infects more cells at once -> earlier lysis
+  ph10 <- function(t) lyse(t, 60,  wt)
+  ph01 <- function(t) lyse(t, 105, wt)
+  one_block <- function() data.frame(
+    Time              = times,
+    "Uninfected"      = noisy(wt(times)),
+    "Phage MOI 10"    = noisy(ph10(times)),
+    "Phage MOI 0.1"   = noisy(ph01(times)),
+    check.names = FALSE)
+  do.call(rbind, replicate(3, one_block(), simplify = FALSE))
 }
 
 # Detect replicates in wide format by finding repeated time blocks
@@ -236,7 +263,9 @@ calculate_growth_metrics <- function(plot_data, smooth_window = 5) {
         }, error = function(e) rep(NA_real_, n_pts))
 
         
-        valid_slopes <- which(is.finite(roll_slopes) & roll_slopes > 0)
+        # require slope > 1e-10 (not > 0) so floating-point noise on a flat
+        # curve is not reported as growth with a doubling time of ~1e17
+        valid_slopes <- which(is.finite(roll_slopes) & roll_slopes > 1e-10)
         if (length(valid_slopes) > 0) {
           mu_max <- max(roll_slopes[valid_slopes], na.rm = TRUE)
           
@@ -374,12 +403,17 @@ calculate_infection_metrics <- function(metrics_df, ref_sample) {
   ref_mu_max <- mean(ref_row$mu_max, na.rm = TRUE)
   ref_max_od <- mean(ref_row$max_od, na.rm = TRUE)
   
+  # NOTE: these must NOT use ifelse() — its result takes the length of the
+  # condition, and with a length-1 condition every sample would silently
+  # receive the FIRST row's relative value (bug fixed 2026-08-19; previously
+  # relative_growth / infection_strength / relative_mu_max / relative_max_od
+  # were wrong for all but the alphabetically-first sample).
   metrics_df %>%
     mutate(
-      relative_growth    = ifelse(is.finite(ref_auc) & ref_auc > 0, auc / ref_auc, NA_real_),
-      infection_strength = ifelse(is.finite(ref_auc) & ref_auc > 0, 1 - (auc / ref_auc), NA_real_),
-      relative_mu_max    = ifelse(is.finite(ref_mu_max) & ref_mu_max > 0, mu_max / ref_mu_max, NA_real_),
-      relative_max_od    = ifelse(is.finite(ref_max_od) & ref_max_od > 0, max_od / ref_max_od, NA_real_),
+      relative_growth    = if (is.finite(ref_auc)    && ref_auc    > 0) auc / ref_auc         else NA_real_,
+      infection_strength = if (is.finite(ref_auc)    && ref_auc    > 0) 1 - (auc / ref_auc)   else NA_real_,
+      relative_mu_max    = if (is.finite(ref_mu_max) && ref_mu_max > 0) mu_max / ref_mu_max   else NA_real_,
+      relative_max_od    = if (is.finite(ref_max_od) && ref_max_od > 0) max_od / ref_max_od   else NA_real_,
       lysis_onset_delta  = lysis_time - lag_phase
     )
 }
@@ -669,6 +703,9 @@ ui <- fluidPage(
     sidebarPanel(width = 3,
                  
                  fileInput("file", "Choose CSV File", accept = c("text/csv", ".csv")),
+                 actionButton("load_demo", "Load Demo Data", icon = icon("flask"),
+                              style = "width:100%;margin:-8px 0 10px 0;font-size:.85em;"),
+                 uiOutput("data_summary_ui"),
                  div(style = "text-align:right; margin-top:-8px; margin-bottom:4px;",
                      checkboxInput("night_mode", "\U1F319 Night Mode", value = FALSE)),
 
@@ -2089,6 +2126,9 @@ server <- function(input, output, session) {
     rep_col           = NULL,
     wide_block_id     = NULL,
     wide_rep_count    = NULL,
+    col_map           = NULL,   # wide format: sample name -> integer column indices
+    data_source       = NULL,   # file name (or "Demo data") for provenance
+
     is_long_format    = FALSE,
     palette_colors    = NULL,
     all_timepoints    = NULL,
@@ -2229,11 +2269,23 @@ server <- function(input, output, session) {
     if (length(hits)) return(hits)
     cols[sapply(data[cols], is.numeric)]
   }
-  
+
+  # Wide format: detect OD columns BY POSITION so replicate columns that share
+  # a name (killcurveplot-style duplicate headers) are all kept, not just the
+  # first of each name. Returns integer indices into colnames(data).
+  detect_od_column_idx <- function(data, time_col) {
+    cn       <- colnames(data)
+    time_idx <- which(cn == time_col)
+    cand     <- setdiff(seq_along(cn), time_idx)
+    hits     <- cand[grepl("od|absorbance|value", cn[cand], ignore.case = TRUE)]
+    if (length(hits)) return(hits)
+    cand[vapply(cand, function(i) is.numeric(data[[i]]), logical(1))]
+  }
+
   # ── Helper: apply a data frame as the active dataset ─────────────────────────
   # Used by both the file-upload observer and the Data Entry "Apply" button so
   # that both paths run exactly the same detection and UI-update logic.
-  apply_data_to_rv <- function(data) {
+  apply_data_to_rv <- function(data, source_name = NULL) {
     # ── Sanitise ────────────────────────────────────────────────────────────
     blank_cols <- nchar(trimws(colnames(data))) == 0
     if (any(blank_cols)) data <- data[, !blank_cols, drop = FALSE]
@@ -2265,8 +2317,15 @@ server <- function(input, output, session) {
       rv$od_vars_raw    <- rv$od_vars
       rv$wide_block_id  <- NULL
       rv$wide_rep_count <- NULL
+      rv$col_map        <- NULL
     } else {
-      oc <- detect_od_columns(data, rv$time_col)
+      # index-based detection keeps ALL replicate columns, including
+      # duplicate headers (killcurveplot-style); stacked time-block
+      # replicates keep working via infer_wide_replicates below
+      idx <- detect_od_column_idx(data, rv$time_col)
+      cn  <- colnames(data)
+      oc  <- unique(cn[idx])
+      rv$col_map        <- lapply(setNames(oc, oc), function(nm) idx[cn[idx] == nm])
       rv$od_vars        <- oc
       rv$od_vars_raw    <- oc
       rv$rep_col        <- NULL
@@ -2277,6 +2336,7 @@ server <- function(input, output, session) {
 
     rv$data          <- data
     rv$data_original <- data   # snapshot for Revert
+    if (!is.null(source_name)) rv$data_source <- source_name
 
     tr <- range(suppressWarnings(as.numeric(as.character(data[[rv$time_col]]))), na.rm = TRUE)
     updateNumericInput(session, "x_min", value = tr[1])
@@ -2300,7 +2360,37 @@ server <- function(input, output, session) {
       error = function(e)
         read.csv(input$file$datapath, stringsAsFactors = FALSE, check.names = TRUE)
     )
-    apply_data_to_rv(data)
+    apply_data_to_rv(data, input$file$name)
+  })
+
+  observeEvent(input$load_demo, {
+    apply_data_to_rv(make_demo_data(), "Demo data (built-in)")
+  })
+
+  # ── Data summary (what the app detected) ─────────────────────────────────────
+  output$data_summary_ui <- renderUI({
+    req(rv$data)
+    rep_txt <- if (rv$is_long_format) {
+      cnts <- table(rv$data[[rv$group_col]])
+      ntp  <- length(rv$all_timepoints)
+      per  <- if (ntp > 0) round(as.numeric(cnts) / ntp, 1) else NA
+      paste0(names(cnts), " (~", per, " rep/time)", collapse = ", ")
+    } else {
+      col_txt <- paste0(names(rv$col_map), " (", lengths(rv$col_map),
+                        ifelse(lengths(rv$col_map) > 1, " replicate cols)", " col)"),
+                        collapse = ", ")
+      blk <- rv$wide_rep_count
+      if (!is.null(blk) && blk > 1)
+        col_txt <- paste0(col_txt, " · ", blk, " stacked replicate blocks")
+      col_txt
+    }
+    div(class = "settings-status ok", style = "margin-bottom:10px;",
+        HTML(paste0(
+          "<b>", htmltools::htmlEscape(rv$data_source %||% "data"), "</b><br/>",
+          "Format: <b>", if (rv$is_long_format) "long" else "wide", "</b> &middot; ",
+          "Time column: <b>", htmltools::htmlEscape(rv$time_col), "</b> &middot; ",
+          length(rv$all_timepoints), " time points<br/>",
+          "Samples: ", htmltools::htmlEscape(rep_txt))))
   })
 
   # ── Select All / Deselect All for Plot tab sample selector ─────────────────
@@ -2323,7 +2413,11 @@ server <- function(input, output, session) {
                            "color_","use_rgb_","red_","green_","blue_","alpha_",
                            "use_hex_","hex_color_","legend_label_",
                            "apply_rgb_","apply_hex_")
-      is_sample_inp <- function(nm) any(vapply(sample_prefixes, startsWith, logical(1), x = nm))
+      # these GLOBAL inputs collide with the per-sample prefixes ("shape_",
+      # "color_") and were silently dropped from saved settings files
+      global_exceptions <- c("shape_size", "color_palette")
+      is_sample_inp <- function(nm) !(nm %in% global_exceptions) &&
+        any(vapply(sample_prefixes, startsWith, logical(1), x = nm))
       
       global_settings <- all_inputs[vapply(names(all_inputs), function(nm)
         !(nm %in% data_inputs) && !is_sample_inp(nm), logical(1))]
@@ -2385,7 +2479,9 @@ server <- function(input, output, session) {
     sample_prefixes <- c("line_type_","shape_","shape_filled_","color_selector_",
                          "color_","use_rgb_","red_","green_","blue_","alpha_",
                          "use_hex_","hex_color_","legend_label_","apply_rgb_","apply_hex_")
-    is_sample_inp <- function(nm) any(vapply(sample_prefixes, startsWith, logical(1), x = nm))
+    global_exceptions <- c("shape_size", "color_palette")   # see save handler note
+    is_sample_inp <- function(nm) !(nm %in% global_exceptions) &&
+      any(vapply(sample_prefixes, startsWith, logical(1), x = nm))
     
     n_global <- 0L
     for (nm in names(global)) {
@@ -2901,6 +2997,37 @@ server <- function(input, output, session) {
   }
 
   # ── Data prep ────────────────────────────────────────────────────────────────
+
+  # Wide data -> long (time, variable, replicate, value), correctly handling
+  # BOTH replicate conventions:
+  #  - stacked time blocks (this app's documented format): replicate = block id,
+  #    recomputed on the (possibly time-filtered) rows passed in — the previous
+  #    code assigned the cached full-data block vector to a filtered frame,
+  #    which errored under time filtering and silently emptied the metrics.
+  #  - duplicate column headers (killcurveplot-style): all columns sharing a
+  #    name contribute (resolved by position via rv$col_map); the previous
+  #    name-based subset silently kept only the FIRST column of each name.
+  wide_to_long <- function(d, meas, value_name = "value") {
+    t_raw  <- suppressWarnings(as.numeric(as.character(d[[rv$time_col]])))
+    blocks <- infer_wide_replicates(d, rv$time_col)$block_id
+    if (is.null(blocks)) blocks <- rep(1L, nrow(d))
+    pieces <- lapply(meas, function(vn) {
+      idxs <- rv$col_map[[vn]]
+      if (is.null(idxs) || length(idxs) == 0) idxs <- which(colnames(d) == vn)
+      do.call(rbind, lapply(seq_along(idxs), function(k) {
+        data.frame(time      = t_raw,
+                   variable  = vn,
+                   replicate = if (length(idxs) > 1)
+                     paste0(blocks, "_c", k) else as.character(blocks),
+                   value     = suppressWarnings(as.numeric(as.character(d[[idxs[k]]]))),
+                   stringsAsFactors = FALSE)
+      }))
+    })
+    out <- do.call(rbind, pieces)
+    names(out)[names(out) == "value"] <- value_name
+    out
+  }
+
   prepare_plot_data <- function(samples = NULL) {
     req(rv$data, rv$time_col, input$selected_samples)
     samps <- if (!is.null(samples)) samples else input$selected_samples
@@ -2912,24 +3039,24 @@ server <- function(input, output, session) {
         group_by(across(all_of(c(rv$time_col, rv$group_col)))) %>%
         summarise(mean_value = mean(.data[[rv$value_col]], na.rm = TRUE),
                   sd_value   = sd(  .data[[rv$value_col]], na.rm = TRUE),
-                  n          = n(), .groups = "drop") %>%
+                  # count only non-NA values that enter the mean — counting NA
+                  # rows silently understated SEM / CI
+                  n          = sum(!is.na(.data[[rv$value_col]])), .groups = "drop") %>%
         mutate(sd_value   = ifelse(is.na(sd_value), 0, sd_value),
-               sem_value  = sd_value / sqrt(n),
+               sem_value  = ifelse(n > 0, sd_value / sqrt(n), 0),
                ci95_value = qt(0.975, df = pmax(n - 1, 1)) * sem_value)
       names(pd)[names(pd) == rv$group_col] <- "variable"
       names(pd)[names(pd) == rv$time_col]  <- "time"
     } else {
       d    <- apply_time_filters(rv$data, rv$time_col)
       meas <- intersect(rv$od_vars_raw, samps)
-      d_sub <- d[, c(rv$time_col, meas), drop = FALSE]
-      pd   <- d_sub %>%
-        pivot_longer(cols = all_of(meas), names_to = "variable", values_to = "value") %>%
-        group_by(time = .data[[rv$time_col]], variable) %>%
+      pd   <- wide_to_long(d, meas) %>%
+        group_by(time, variable) %>%
         summarise(mean_value = mean(value, na.rm = TRUE),
                   sd_value   = sd(  value, na.rm = TRUE),
-                  n          = n(), .groups = "drop") %>%
+                  n          = sum(!is.na(value)), .groups = "drop") %>%
         mutate(sd_value   = ifelse(is.na(sd_value), 0, sd_value),
-               sem_value  = sd_value / sqrt(n),
+               sem_value  = ifelse(n > 0, sd_value / sqrt(n), 0),
                ci95_value = qt(0.975, df = pmax(n - 1, 1)) * sem_value)
     }
     pd <- pd %>% filter(is.finite(time) & is.finite(mean_value))
@@ -2954,21 +3081,14 @@ server <- function(input, output, session) {
       if (!is.null(rv$rep_col) && rv$rep_col %in% names(pd))
         names(pd)[names(pd) == rv$rep_col] <- "replicate"
     } else {
-      d  <- apply_time_filters(rv$data, rv$time_col)
+      d    <- apply_time_filters(rv$data, rv$time_col)
       meas <- intersect(rv$od_vars_raw, samps)
-      if (is.null(rv$wide_block_id)) {
-        wide_rep <- infer_wide_replicates(d, rv$time_col)
-        rv$wide_block_id  <- wide_rep$block_id
-        rv$wide_rep_count <- wide_rep$reps
-      }
-      if (!is.null(rv$wide_block_id)) d$replicate <- rv$wide_block_id
-      grp_cols_w <- c(rv$time_col, "variable")
-      if ("replicate" %in% names(d)) grp_cols_w <- c(grp_cols_w, "replicate")
-      pd <- d %>%
-        pivot_longer(cols = all_of(meas), names_to = "variable", values_to = "value") %>%
-        group_by(across(all_of(grp_cols_w))) %>%
-        summarise(mean_value = mean(value, na.rm = TRUE), .groups = "drop") %>%
-        rename(time = !!sym(rv$time_col))
+      pd   <- wide_to_long(d, meas) %>%
+        group_by(time, variable, replicate) %>%
+        summarise(mean_value = mean(value, na.rm = TRUE), .groups = "drop")
+      # keep the replicate column only when there is real replicate structure,
+      # preserving the single-replicate behavior downstream
+      if (length(unique(pd$replicate)) <= 1) pd$replicate <- NULL
     }
     pd <- pd %>% filter(is.finite(time) & is.finite(mean_value))
     apply_sample_time_filters(pd)
@@ -2997,15 +3117,7 @@ server <- function(input, output, session) {
     } else {
       d    <- apply_time_filters(rv$data, rv$time_col)
       meas <- intersect(rv$od_vars_raw, samps)
-      if (is.null(rv$wide_block_id)) {
-        wide_rep <- infer_wide_replicates(d, rv$time_col)
-        rv$wide_block_id  <- wide_rep$block_id
-        rv$wide_rep_count <- wide_rep$reps
-      }
-      d$replicate <- if (!is.null(rv$wide_block_id)) rv$wide_block_id else 1L
-      pd <- d %>%
-        pivot_longer(cols = all_of(meas), names_to = "variable", values_to = "rep_value") %>%
-        rename(time = !!sym(rv$time_col)) %>%
+      pd   <- wide_to_long(d, meas, "rep_value") %>%
         select(time, variable, replicate, rep_value)
     }
     pd <- pd %>% filter(is.finite(time) & is.finite(rep_value))
