@@ -167,6 +167,107 @@ parse_excluded_timepoints <- function(text, all_timepoints) {
 # builders below use it; the server also defines it for its own use.
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
+# ── Publication presets ───────────────────────────────────────────────────────
+# Journal print rules: single column = 89 mm = 3.5 in, 1.5 column = 140 mm =
+# 5.51 in, double column = 183 mm = 7.2 in; sans-serif faces; final printed text
+# between 5 and 12 pt.  Export sizes here are inches at print scale, so the font
+# point sizes below are the *printed* sizes and need no further scaling.
+#
+# Top-level (outside the server) so the mapping is unit-testable without a
+# Shiny session.  Returns a named list of input id -> value, or NULL for an
+# unknown / empty preset key.
+pub_preset_settings <- function(name) {
+  if (is.null(name) || !is.character(name) || length(name) != 1 || !nzchar(name))
+    return(NULL)
+  switch(name,
+    single = list(
+      export_width = 3.5, export_height = 2.8, export_dpi = 600,
+      export_format = "tiff", font_family = "sans",
+      title_font_size = 10, axis_label_font_size = 9, axis_text_font_size = 8,
+      line_thickness = 0.7, shape_size = 1.6, color_palette = "colorblind",
+      show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
+    onehalf = list(
+      export_width = 5.51, export_height = 4.1, export_dpi = 600,
+      export_format = "tiff", font_family = "sans",
+      title_font_size = 11, axis_label_font_size = 10, axis_text_font_size = 9,
+      line_thickness = 0.7, shape_size = 1.6, color_palette = "colorblind",
+      show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
+    double = list(
+      export_width = 7.2, export_height = 5.0, export_dpi = 600,
+      export_format = "tiff", font_family = "sans",
+      title_font_size = 12, axis_label_font_size = 10, axis_text_font_size = 9,
+      line_thickness = 0.8, shape_size = 2, color_palette = "colorblind",
+      show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
+    pdfvec = list(
+      export_width = 7, export_height = 5, export_dpi = 300,
+      export_format = "pdf", font_family = "sans",
+      title_font_size = 14, axis_label_font_size = 12, axis_text_font_size = 11,
+      line_thickness = 1, shape_size = 2.5, color_palette = "colorblind",
+      show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
+    slide = list(
+      export_width = 10, export_height = 7.5, export_dpi = 300,
+      export_format = "png", font_family = "sans",
+      title_font_size = 22, axis_label_font_size = 20, axis_text_font_size = 18,
+      line_thickness = 1.6, shape_size = 3.5),
+    # Visual only — deliberately leaves export size / format alone.
+    prism = list(
+      use_advanced_ticks = TRUE, bold_title = TRUE,
+      title_font_size = 18, axis_label_font_size = 16, axis_text_font_size = 14,
+      line_thickness = 1.2, shape_size = 2.6,
+      show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
+    NULL)
+}
+
+PUB_PRESET_CHOICES <- c("— choose a preset —"                      = "",
+                        "Single column (89 mm, TIFF 600 dpi)"      = "single",
+                        "1.5 column (140 mm, TIFF 600 dpi)"        = "onehalf",
+                        "Double column (183 mm, TIFF 600 dpi)"     = "double",
+                        "PDF vector (7 x 5 in, journal default)"   = "pdfvec",
+                        "Presentation slide (10 x 7.5 in PNG)"     = "slide",
+                        "Prism-style look"                         = "prism")
+
+pub_preset_label <- function(name) {
+  hit <- names(PUB_PRESET_CHOICES)[match(name, PUB_PRESET_CHOICES)]
+  if (length(hit) == 1 && !is.na(hit)) hit else name
+}
+
+# One-line human summary of what a preset changes (used in the notification).
+pub_preset_summary <- function(vals) {
+  if (is.null(vals)) return("")
+  parts <- character(0)
+  if (!is.null(vals$export_width) && !is.null(vals$export_height))
+    parts <- c(parts, sprintf("%g x %g in", vals$export_width, vals$export_height))
+  if (!is.null(vals$export_format)) parts <- c(parts, toupper(vals$export_format))
+  if (!is.null(vals$export_dpi))    parts <- c(parts, paste0(vals$export_dpi, " dpi"))
+  if (!is.null(vals$axis_text_font_size))
+    parts <- c(parts, sprintf("text %g / labels %g / title %g pt",
+                              vals$axis_text_font_size,
+                              vals$axis_label_font_size %||% vals$axis_text_font_size,
+                              vals$title_font_size      %||% vals$axis_text_font_size))
+  if (!is.null(vals$line_thickness)) parts <- c(parts, paste0("line ", vals$line_thickness))
+  if (!is.null(vals$shape_size))     parts <- c(parts, paste0("points ", vals$shape_size))
+  if (!is.null(vals$color_palette))  parts <- c(parts, paste0(vals$color_palette, " palette"))
+  paste(parts, collapse = ", ")
+}
+
+# Colour presets offered by the click-to-edit legend editor. Mirrors the
+# per-sample "Pick Color" dropdown built in output$var_settings.
+CE_COLOR_CHOICES <- c("Black" = "#000000", "Red"    = "#E41A1C",
+                      "Blue"  = "#377EB8", "Green"  = "#4DAF4A",
+                      "Purple"= "#984EA3", "Orange" = "#FF7F00",
+                      "Yellow"= "#FFFF33", "Brown"  = "#A65628",
+                      "Pink"  = "#F781BF", "Gray"   = "#999999",
+                      "Teal"  = "#009E73", "Custom" = "custom")
+
+CE_SHAPE_CHOICES <- c("Circle" = 16, "Square" = 15, "Triangle Up" = 17,
+                      "Diamond" = 18, "Triangle Down" = 25, "Cross" = 4,
+                      "X" = 8, "Open Circle" = 21, "Open Square" = 22,
+                      "Open Triangle" = 24, "Plus" = 3, "Star" = 10)
+
+CE_LINETYPE_CHOICES <- c("Solid" = "solid", "Dashed" = "dashed",
+                         "Dotted" = "dotted", "DotDash" = "dotdash",
+                         "LongDash" = "longdash", "TwoDash" = "twodash")
+
 # ── Analysis report helpers ───────────────────────────────────────────────────
 # Plain-language definitions of every column produced by
 # calculate_growth_metrics() / calculate_infection_metrics(). The report
@@ -1535,6 +1636,38 @@ ui <- fluidPage(
                    ),
 
                    tabPanel("Style",
+                 # ── Click-to-edit ─────────────────────────────────────────────────────────
+                 div(class = "panel-section",
+                     checkboxInput("enable_click_edit", "Click plot text to edit", TRUE),
+                     p(style = "font-size:.80em;color:#888;margin-top:-6px;margin-bottom:0;",
+                       "Click the title, an axis label, or the legend area on the plot to edit it.")
+                 ),
+                 # ── Project Themes ────────────────────────────────────────────────────────
+                 div(class = "panel-section",
+                     h4("Project Themes", class = "panel-title"),
+                     p(style = "font-size:.82em;color:#555;margin-bottom:8px;",
+                       "A theme remembers per-sample color, shape, line type and legend label ",
+                       "by sample name — so \"WT\" stays black/solid/circle in every session."),
+                     selectInput("active_theme", "Active theme:", choices = c("None" = ""),
+                                 selected = ""),
+                     checkboxInput("theme_autoapply",
+                                   "Auto-apply to matching sample names on data load", TRUE),
+                     fluidRow(
+                       column(7, textInput("theme_name", "Theme name:", "")),
+                       column(5, actionButton("save_theme", "Save current styles as theme",
+                                              style = "margin-top:25px;width:100%;font-size:.78em;"))
+                     ),
+                     fluidRow(
+                       column(6, actionButton("apply_theme", "Apply now",
+                                              style = "width:100%;font-size:.8em;")),
+                       column(6, actionButton("delete_theme", "Delete selected theme",
+                                              style = "width:100%;font-size:.78em;background:#dc3545;color:white;border:none;"))
+                     ),
+                     p(style = "font-size:.80em;color:#888;margin-top:8px;margin-bottom:0;",
+                       "Themes are JSON files in the ", tags$code("themes/"),
+                       " folder next to the app, so they survive restarts. Commit that folder ",
+                       "to your project repo to share a lab-standard look with collaborators.")
+                 ),
                  # ── Color Palettes ────────────────────────────────────────────────────────
                  tags$details(
                    tags$summary("Color Palettes"),
@@ -1782,6 +1915,19 @@ ui <- fluidPage(
                    ),
 
                    tabPanel("Export",
+                 # ── Publication Presets ───────────────────────────────────────────────────
+                 div(class = "panel-section",
+                     h4("Publication Presets", class = "panel-title"),
+                     p(style = "font-size:.82em;color:#555;margin-bottom:8px;",
+                       "One click sets export size, resolution, format and font sizes to ",
+                       "common journal figure specs (89 / 140 / 183 mm column widths, ",
+                       "sans-serif, 8-12 pt printed text). Data, samples and filters are untouched."),
+                     selectInput("pub_preset", "Preset:", choices = PUB_PRESET_CHOICES,
+                                 selected = ""),
+                     actionButton("apply_preset", "Apply Preset",
+                                  icon  = icon("magic"),
+                                  style = "width:100%;")
+                 ),
                  # ── Plot Dimensions & Export ──────────────────────────────────────────────
                  tags$details(
                    tags$summary("Plot Dimensions & Export"),
@@ -3096,6 +3242,7 @@ server <- function(input, output, session) {
       rv$palette_colors <- get_palette_colors(input$color_palette, length(rv$od_vars))
 
     apply_imported_sample_aesthetics()
+    theme_autoapply_on_load()
   }
 
   observeEvent(input$file, {
@@ -3147,6 +3294,30 @@ server <- function(input, output, session) {
   })
 
   # ── Settings: Save ───────────────────────────────────────────────────────────
+  # Per-sample aesthetic extraction. Shared by the Save Settings download and by
+  # Project Themes so both write byte-identical `sample_aesthetics` blocks.
+  collect_sample_aesthetics <- function(samps) {
+    out <- list()
+    if (is.null(samps) || length(samps) == 0) return(out)
+    for (vn in samps) {
+      vid     <- safe_id(vn)
+      leg     <- input[[paste0("legend_label_", vid)]]
+      col_sel <- input[[paste0("color_selector_", vid)]]
+      color   <- if (!is.null(col_sel) && col_sel == "custom")
+        normalize_hex_color(input[[paste0("color_", vid)]])
+      else if (!is.null(col_sel)) col_sel
+      else "#000000"
+      out[[vn]] <- list(
+        color        = color,
+        shape        = input[[paste0("shape_",        vid)]],
+        shape_filled = input[[paste0("shape_filled_", vid)]],
+        line_type    = input[[paste0("line_type_",    vid)]],
+        legend_label = if (!is.null(leg) && nchar(leg) > 0) leg else vn
+      )
+    }
+    out
+  }
+
   output$saveSettings <- downloadHandler(
     filename = function()
       paste0("plot_settings_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".json"),
@@ -3167,27 +3338,8 @@ server <- function(input, output, session) {
       global_settings <- all_inputs[vapply(names(all_inputs), function(nm)
         !(nm %in% data_inputs) && !is_sample_inp(nm), logical(1))]
       
-      sample_aesthetics <- list()
-      samps <- isolate(input$selected_samples)
-      if (!is.null(samps)) {
-        for (vn in samps) {
-          vid     <- safe_id(vn)
-          leg     <- input[[paste0("legend_label_", vid)]]
-          col_sel <- input[[paste0("color_selector_", vid)]]
-          color   <- if (!is.null(col_sel) && col_sel == "custom")
-            normalize_hex_color(input[[paste0("color_", vid)]])
-          else if (!is.null(col_sel)) col_sel
-          else "#000000"
-          sample_aesthetics[[vn]] <- list(
-            color        = color,
-            shape        = input[[paste0("shape_",        vid)]],
-            shape_filled = input[[paste0("shape_filled_", vid)]],
-            line_type    = input[[paste0("line_type_",    vid)]],
-            legend_label = if (!is.null(leg) && nchar(leg) > 0) leg else vn
-          )
-        }
-      }
-      
+      sample_aesthetics <- collect_sample_aesthetics(isolate(input$selected_samples))
+
       out <- list(
         version            = "2.5",
         saved_at           = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
@@ -3319,15 +3471,18 @@ server <- function(input, output, session) {
     )
   })
   
-  # Applies imported per-sample aesthetics to any matching currently-loaded samples.
-  apply_imported_sample_aesthetics <- function() {
-    imp <- rv$imported_settings
-    if (is.null(imp) || is.null(imp$samples) || length(imp$samples) == 0) return()
-    cur_samps <- isolate(input$selected_samples)
-    if (is.null(cur_samps) || length(cur_samps) == 0) return()
-    for (vn in cur_samps) {
-      if (!vn %in% names(imp$samples)) next
-      aes   <- imp$samples[[vn]]
+  # Pushes a named list of per-sample aesthetics (as written by Save Settings or
+  # by a project theme) onto the matching per-sample inputs. Returns the number
+  # of samples that matched. Shared by settings import, project themes and the
+  # theme auto-apply on data load.
+  apply_sample_aes <- function(aes_map, samples) {
+    if (is.null(aes_map) || length(aes_map) == 0)  return(0L)
+    if (is.null(samples) || length(samples) == 0)  return(0L)
+    n_hit <- 0L
+    for (vn in samples) {
+      if (!vn %in% names(aes_map)) next
+      aes   <- aes_map[[vn]]
+      if (is.null(aes)) next
       vid   <- safe_id(vn)
       if (!is.null(aes$color)) {
         updateSelectInput(session, paste0("color_selector_", vid), selected = "custom")
@@ -3342,9 +3497,204 @@ server <- function(input, output, session) {
         updateSelectInput(session, paste0("line_type_", vid), selected = aes$line_type)
       if (!is.null(aes$legend_label))
         updateTextInput(session, paste0("legend_label_", vid), value = aes$legend_label)
+      n_hit <- n_hit + 1L
     }
+    n_hit
   }
-  
+
+  # Applies imported per-sample aesthetics to any matching currently-loaded samples.
+  apply_imported_sample_aesthetics <- function() {
+    imp <- rv$imported_settings
+    if (is.null(imp) || is.null(imp$samples) || length(imp$samples) == 0) return()
+    apply_sample_aes(imp$samples, isolate(input$selected_samples))
+    invisible(NULL)
+  }
+
+  # ── Publication presets ──────────────────────────────────────────────────────
+  # The id -> value mapping lives in the top-level pub_preset_settings(); this
+  # observer just dispatches the right update* call per value type. Nothing here
+  # touches data, sample selection or time filters.
+  observeEvent(input$apply_preset, {
+    key  <- input$pub_preset %||% ""
+    vals <- pub_preset_settings(key)
+    if (is.null(vals)) {
+      showNotification("Choose a publication preset first.", type = "warning")
+      return()
+    }
+    n_ok <- 0L
+    for (nm in names(vals)) {
+      v <- vals[[nm]]
+      tryCatch({
+        if (is.logical(v)) {
+          updateCheckboxInput(session, nm, value = v)
+        } else if (is.numeric(v)) {
+          # numericInput vs sliderInput — each ignores the wrong message type
+          updateNumericInput(session, nm, value = v)
+          updateSliderInput( session, nm, value = v)
+        } else {
+          updateSelectInput(session, nm, selected = v)
+          updateTextInput(session,   nm, value    = v)
+        }
+        n_ok <- n_ok + 1L
+      }, error = function(e) invisible(NULL))
+    }
+    showNotification(
+      sprintf("%s applied — %s.", pub_preset_label(key), pub_preset_summary(vals)),
+      type = "message", duration = 8)
+  })
+
+  # ── Project Themes (persistent per-sample styles) ────────────────────────────
+  # Themes live as JSON files in a "themes" folder next to the app file, so they
+  # survive restarts and can be committed to a project repo. run_app.R sources
+  # the app from the app directory, so getwd() is the right anchor unless a
+  # global APP_DIR has been set by an alternative launcher.
+  themes_dir_path <- function() {
+    base <- tryCatch({
+      ad <- if (exists("APP_DIR", inherits = TRUE)) get("APP_DIR", inherits = TRUE) else NULL
+      if (is.character(ad) && length(ad) == 1 && nzchar(ad)) ad else getwd()
+    }, error = function(e) getwd())
+    file.path(base, "themes")
+  }
+  themes_dir_ensure <- function() {
+    d <- themes_dir_path()
+    if (!dir.exists(d)) dir.create(d, showWarnings = FALSE, recursive = TRUE)
+    d
+  }
+  theme_key  <- function(nm) gsub("[^A-Za-z0-9]+", "_", trimws(nm %||% ""))
+  theme_path <- function(nm) file.path(themes_dir_path(), paste0(theme_key(nm), ".json"))
+
+  list_theme_names <- function() {
+    d <- themes_dir_path()
+    if (!dir.exists(d)) return(character(0))
+    sort(sub("\\.json$", "", basename(list.files(d, pattern = "\\.json$"))))
+  }
+
+  refresh_theme_choices <- function(selected = NULL) {
+    nms  <- list_theme_names()
+    sel  <- selected %||% isolate(input$active_theme) %||% ""
+    if (!(sel %in% nms)) sel <- ""
+    updateSelectInput(session, "active_theme",
+                      choices  = c("None" = "", setNames(nms, nms)),
+                      selected = sel)
+    invisible(nms)
+  }
+
+  # Reads a theme's sample_aesthetics block; NULL when missing or corrupt.
+  read_theme_aes <- function(key) {
+    f <- theme_path(key)
+    if (!nzchar(theme_key(key)) || !file.exists(f)) return(NULL)
+    tryCatch({
+      s <- fromJSON(f, simplifyVector = FALSE)
+      sa <- s$sample_aesthetics %||% s$samples
+      if (is.null(sa) || length(sa) == 0) NULL else sa
+    }, error = function(e) NULL)
+  }
+
+  # Populate the dropdown from disk at startup.
+  refresh_theme_choices()
+
+  observeEvent(input$save_theme, {
+    nm <- trimws(input$theme_name %||% "")
+    if (!nzchar(nm) || !nzchar(theme_key(nm))) {
+      showNotification("Enter a theme name before saving.", type = "warning")
+      return()
+    }
+    samps <- isolate(input$selected_samples)
+    if (is.null(samps) || length(samps) == 0) samps <- rv$od_vars
+    if (is.null(samps) || length(samps) == 0) {
+      showNotification("Load data and select samples before saving a theme.", type = "warning")
+      return()
+    }
+    aes_map <- collect_sample_aesthetics(samps)
+    ok <- tryCatch({
+      themes_dir_ensure()
+      write_json(list(version           = "1.0",
+                      saved_at          = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+                      sample_aesthetics = aes_map),
+                 theme_path(nm), pretty = TRUE, auto_unbox = TRUE)
+      TRUE
+    }, error = function(e) {
+      showNotification(paste("Could not save theme:", conditionMessage(e)), type = "error")
+      FALSE
+    })
+    if (!isTRUE(ok)) return()
+    refresh_theme_choices(selected = theme_key(nm))
+    showNotification(sprintf("Theme '%s' saved (%d sample%s).",
+                             theme_key(nm), length(aes_map),
+                             if (length(aes_map) == 1) "" else "s"),
+                     type = "message")
+  })
+
+  observeEvent(input$apply_theme, {
+    key <- input$active_theme %||% ""
+    if (!nzchar(key)) {
+      showNotification("Select a theme first.", type = "warning")
+      return()
+    }
+    aes_map <- read_theme_aes(key)
+    if (is.null(aes_map)) {
+      showNotification(sprintf("Theme '%s' is missing or unreadable.", key), type = "warning")
+      return()
+    }
+    samps <- isolate(input$selected_samples)
+    if (is.null(samps) || length(samps) == 0) samps <- rv$od_vars
+    k <- apply_sample_aes(aes_map, samps)
+    showNotification(sprintf("Theme '%s': styles applied to %d of %d samples.",
+                             key, k, length(samps %||% character(0))),
+                     type = "message")
+  })
+
+  observeEvent(input$delete_theme, {
+    key <- input$active_theme %||% ""
+    if (!nzchar(key)) {
+      showNotification("Select a theme to delete.", type = "warning")
+      return()
+    }
+    showModal(modalDialog(
+      title = "Delete theme", size = "s", easyClose = TRUE,
+      p("Permanently delete the theme ", tags$b(key), " from the themes folder?"),
+      footer = tagList(modalButton("Cancel"),
+                       actionButton("delete_theme_confirm", "Delete",
+                                    style = "background:#dc3545;color:white;border:none;"))
+    ))
+  })
+
+  observeEvent(input$delete_theme_confirm, {
+    key <- input$active_theme %||% ""
+    removeModal()
+    if (!nzchar(key)) return()
+    f  <- theme_path(key)
+    ok <- tryCatch(if (file.exists(f)) file.remove(f) else FALSE,
+                   error = function(e) FALSE)
+    refresh_theme_choices(selected = "")
+    showNotification(if (isTRUE(ok)) sprintf("Theme '%s' deleted.", key)
+                     else sprintf("Theme '%s' could not be deleted.", key),
+                     type = if (isTRUE(ok)) "message" else "warning")
+  })
+
+  # Called at the end of apply_data_to_rv(): re-style freshly loaded samples
+  # whose names match the active theme. Never allowed to break a data load.
+  theme_autoapply_on_load <- function() {
+    key <- isolate(input$active_theme) %||% ""
+    if (!isTRUE(isolate(input$theme_autoapply)) || !nzchar(key)) return(invisible(NULL))
+    tryCatch({
+      aes_map <- read_theme_aes(key)
+      if (is.null(aes_map)) {
+        showNotification(sprintf("Theme '%s' could not be read — styles not applied.", key),
+                         type = "warning")
+        return(invisible(NULL))
+      }
+      samps <- rv$od_vars
+      k     <- apply_sample_aes(aes_map, samps)
+      showNotification(sprintf("Theme '%s': styles applied to %d of %d samples.",
+                               key, k, length(samps %||% character(0))),
+                       type = "message")
+    }, error = function(e)
+      showNotification(paste("Theme auto-apply failed:", conditionMessage(e)),
+                       type = "warning"))
+    invisible(NULL)
+  }
+
   # ── Settings: Clear ──────────────────────────────────────────────────────────
   observeEvent(input$clearSettings, {
     if (is.null(rv$imported_settings)) {
@@ -3383,6 +3733,7 @@ server <- function(input, output, session) {
       jitter_size           = 1.5,        jitter_width           = 0.0,
       legend_wrap_width     = 20L,
       custom_aspect_ratio   = FALSE,      aspect_ratio           = 1,
+      pub_preset            = "",
       export_format         = "pdf",      export_width           = 10,
       export_height         = 8,          export_dpi             = 300,
       plot_width            = 820,        plot_height            = 600,
@@ -4458,6 +4809,202 @@ server <- function(input, output, session) {
         updateNumericInput(session, "legend_y", value = round(cy, 2))
       }
     }
+  })
+
+  # ── Click-to-edit plot text ──────────────────────────────────────────────────
+  # The main plot is a grid-drawn fixed-panel grob, so its coordmap is minimal —
+  # work in fractions of the rendered image instead of data coordinates.
+  # Returned fractions are measured from the TOP-LEFT of the image.
+  click_frac <- function(clk) {
+    if (is.null(clk)) return(NULL)
+    npc <- clk$coords_npc
+    if (!is.null(npc) && !is.null(npc$x) && !is.null(npc$y))
+      return(list(x = as.numeric(npc$x), y = 1 - as.numeric(npc$y)))  # npc y is bottom-up
+    px <- clk$coords_css$x; py <- clk$coords_css$y
+    rx <- 1; ry <- 1
+    if (is.null(px) || is.null(py)) {
+      px  <- clk$coords_img$x; py <- clk$coords_img$y
+      icr <- clk$img_css_ratio
+      if (!is.null(icr)) { rx <- icr$x %||% 1; ry <- icr$y %||% 1 }
+    }
+    if (is.null(px) || is.null(py)) return(NULL)
+    w <- (input$plot_width  %||% 820) + legend_extra_px()
+    h <- (input$plot_height %||% 600)
+    if (!is.finite(w) || w <= 0 || !is.finite(h) || h <= 0) return(NULL)
+    list(x = as.numeric(px) / rx / w, y = as.numeric(py) / ry / h)
+  }
+
+  ce_modal_footer <- function(apply_id)
+    tagList(modalButton("Cancel"),
+            actionButton(apply_id, "Apply", class = "btn-primary"))
+
+  ce_title_editor <- function() {
+    showModal(modalDialog(
+      title = "Edit plot title", size = "m", easyClose = TRUE,
+      textInput("ce_title",    "Plot title:", value = input$plot_title    %||% ""),
+      textInput("ce_subtitle", "Subtitle:",   value = input$plot_subtitle %||% ""),
+      numericInput("ce_title_size", "Title font size (pt):",
+                   value = input$title_font_size %||% 20, min = 6, max = 60, step = 1),
+      checkboxInput("ce_title_bold", "Bold title", value = isTRUE(input$bold_title)),
+      footer = ce_modal_footer("ce_apply_title")
+    ))
+  }
+  observeEvent(input$ce_apply_title, {
+    updateTextInput(session, "plot_title",    value = input$ce_title    %||% "")
+    updateTextInput(session, "plot_subtitle", value = input$ce_subtitle %||% "")
+    ts <- input$ce_title_size
+    if (!is.null(ts) && is.finite(ts)) updateNumericInput(session, "title_font_size", value = ts)
+    updateCheckboxInput(session, "bold_title", value = isTRUE(input$ce_title_bold))
+    removeModal()
+  })
+
+  ce_axis_editor <- function(axis) {
+    is_x <- identical(axis, "x")
+    showModal(modalDialog(
+      title = if (is_x) "Edit X-axis label" else "Edit Y-axis label",
+      size = "m", easyClose = TRUE,
+      textInput("ce_axis_label", if (is_x) "X-axis label:" else "Y-axis label:",
+                value = (if (is_x) input$x_axis_label else input$y_axis_label) %||% ""),
+      numericInput("ce_axis_size", "Axis label font size (pt):",
+                   value = input$axis_label_font_size %||% 20, min = 6, max = 48, step = 1),
+      footer = ce_modal_footer(if (is_x) "ce_apply_xlab" else "ce_apply_ylab")
+    ))
+  }
+  ce_apply_axis <- function(id) {
+    updateTextInput(session, id, value = input$ce_axis_label %||% "")
+    as_ <- input$ce_axis_size
+    if (!is.null(as_) && is.finite(as_))
+      updateNumericInput(session, "axis_label_font_size", value = as_)
+    removeModal()
+  }
+  observeEvent(input$ce_apply_xlab, ce_apply_axis("x_axis_label"))
+  observeEvent(input$ce_apply_ylab, ce_apply_axis("y_axis_label"))
+
+  # Current per-sample style, resolved the same way resolve_aesthetics() does.
+  ce_sample_style <- function(vn) {
+    vid     <- safe_id(vn)
+    col_sel <- input[[paste0("color_selector_", vid)]]
+    color   <- if (!is.null(col_sel) && col_sel == "custom")
+      normalize_hex_color(input[[paste0("color_", vid)]])
+    else if (!is.null(col_sel)) col_sel
+    else "#000000"
+    ll <- input[[paste0("legend_label_", vid)]]
+    fl <- input[[paste0("shape_filled_", vid)]]
+    list(color  = color,
+         preset = if (color %in% CE_COLOR_CHOICES) color else "custom",
+         label  = if (!is.null(ll) && nchar(ll) > 0) ll else vn,
+         line   = input[[paste0("line_type_", vid)]] %||% "solid",
+         shape  = as.character(input[[paste0("shape_", vid)]] %||% "16"),
+         filled = if (is.null(fl)) TRUE else isTRUE(fl))
+  }
+
+  ce_legend_editor <- function(frac_y) {
+    samps <- input$selected_samples
+    if (is.null(samps) || length(samps) == 0) { ce_general_editor(); return() }
+    i   <- as.integer(ceiling((frac_y %||% 0.5) * length(samps)))
+    i   <- max(1L, min(length(samps), i))
+    vn  <- samps[i]
+    st  <- ce_sample_style(vn)
+    showModal(modalDialog(
+      title = "Edit legend entry", size = "m", easyClose = TRUE,
+      selectInput("ce_leg_sample", "Sample:", choices = samps, selected = vn),
+      textInput("ce_leg_label", "Legend label:", value = st$label),
+      fluidRow(
+        column(6, selectInput("ce_leg_color_preset", "Color:",
+                              choices = CE_COLOR_CHOICES, selected = st$preset)),
+        column(6, textInput("ce_leg_hex", "HEX:", value = st$color))
+      ),
+      fluidRow(
+        column(6, selectInput("ce_leg_line", "Line type:",
+                              choices = CE_LINETYPE_CHOICES, selected = st$line)),
+        column(6, selectInput("ce_leg_shape", "Shape:",
+                              choices = CE_SHAPE_CHOICES, selected = st$shape))
+      ),
+      checkboxInput("ce_leg_filled", "Filled shape", value = st$filled),
+      p(style = "font-size:.82em;color:#888;margin-bottom:0;",
+        "Changes are written to this sample's controls under Style → Variable Styling."),
+      footer = ce_modal_footer("ce_apply_legend")
+    ))
+  }
+  # Switching the sample inside the modal re-prefills the fields.
+  observeEvent(input$ce_leg_sample, {
+    vn <- input$ce_leg_sample
+    if (is.null(vn) || !nzchar(vn)) return()
+    st <- ce_sample_style(vn)
+    updateTextInput(session,   "ce_leg_label",        value    = st$label)
+    updateSelectInput(session, "ce_leg_color_preset", selected = st$preset)
+    updateTextInput(session,   "ce_leg_hex",          value    = st$color)
+    updateSelectInput(session, "ce_leg_line",         selected = st$line)
+    updateSelectInput(session, "ce_leg_shape",        selected = st$shape)
+    updateCheckboxInput(session, "ce_leg_filled",     value    = st$filled)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$ce_apply_legend, {
+    vn <- input$ce_leg_sample
+    if (is.null(vn) || !nzchar(vn)) { removeModal(); return() }
+    vid  <- safe_id(vn)
+    pres <- input$ce_leg_color_preset
+    hex  <- if (!is.null(pres) && pres != "custom") pres
+    else normalize_hex_color(input$ce_leg_hex)
+    updateSelectInput(session, paste0("color_selector_", vid), selected = "custom")
+    updateTextInput(session,   paste0("color_",          vid), value    = hex)
+    updateTextInput(session,   paste0("hex_color_",      vid), value    = hex)
+    if (!is.null(input$ce_leg_label))
+      updateTextInput(session, paste0("legend_label_", vid), value = input$ce_leg_label)
+    if (!is.null(input$ce_leg_line))
+      updateSelectInput(session, paste0("line_type_", vid), selected = input$ce_leg_line)
+    if (!is.null(input$ce_leg_shape))
+      updateSelectInput(session, paste0("shape_", vid), selected = as.character(input$ce_leg_shape))
+    updateCheckboxInput(session, paste0("shape_filled_", vid), value = isTRUE(input$ce_leg_filled))
+    removeModal()
+  })
+
+  ce_general_editor <- function() {
+    showModal(modalDialog(
+      title = "Edit plot text", size = "m", easyClose = TRUE,
+      textInput("ce_g_title",    "Plot title:", value = input$plot_title    %||% ""),
+      textInput("ce_g_subtitle", "Subtitle:",   value = input$plot_subtitle %||% ""),
+      fluidRow(
+        column(6, textInput("ce_g_xlab", "X-axis label:", value = input$x_axis_label %||% "")),
+        column(6, textInput("ce_g_ylab", "Y-axis label:", value = input$y_axis_label %||% ""))
+      ),
+      fluidRow(
+        column(4, numericInput("ce_g_title_size", "Title (pt):",
+                               value = input$title_font_size %||% 20, min = 6, max = 60)),
+        column(4, numericInput("ce_g_label_size", "Axis labels (pt):",
+                               value = input$axis_label_font_size %||% 20, min = 6, max = 48)),
+        column(4, numericInput("ce_g_text_size",  "Axis text (pt):",
+                               value = input$axis_text_font_size %||% 16, min = 4, max = 40))
+      ),
+      footer = ce_modal_footer("ce_apply_general")
+    ))
+  }
+  observeEvent(input$ce_apply_general, {
+    updateTextInput(session, "plot_title",    value = input$ce_g_title    %||% "")
+    updateTextInput(session, "plot_subtitle", value = input$ce_g_subtitle %||% "")
+    updateTextInput(session, "x_axis_label",  value = input$ce_g_xlab     %||% "")
+    updateTextInput(session, "y_axis_label",  value = input$ce_g_ylab     %||% "")
+    for (p in list(c("ce_g_title_size", "title_font_size"),
+                   c("ce_g_label_size", "axis_label_font_size"),
+                   c("ce_g_text_size",  "axis_text_font_size"))) {
+      v <- input[[p[1]]]
+      if (!is.null(v) && is.finite(v)) updateNumericInput(session, p[2], value = v)
+    }
+    removeModal()
+  })
+
+  observeEvent(input$plot_click, {
+    if (!isTRUE(input$enable_click_edit)) return()
+    # Click-to-place-legend owns the click while it is armed.
+    if (isTRUE(input$legend_click_mode) &&
+        !is.null(input$legend_position) && input$legend_position == "inside") return()
+    fr <- click_frac(input$plot_click)
+    if (is.null(fr) || !is.finite(fr$x) || !is.finite(fr$y)) return()
+    if      (fr$x < 0.08) ce_axis_editor("y")   # left edge strip  -> Y-axis label
+    else if (fr$y > 0.90) ce_axis_editor("x")   # bottom strip     -> X-axis label
+    else if (fr$y < 0.10) ce_title_editor()     # top strip        -> title
+    else if (fr$x > 0.82) ce_legend_editor(fr$y)# right strip      -> legend entry
+    else                  ce_general_editor()
   })
 
   # Corner preset buttons

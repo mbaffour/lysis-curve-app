@@ -201,6 +201,11 @@ A column named `replicate`, `rep`, or `well` is used for replicate-aware statist
 
 ## Features
 
+### Layout
+
+- **Sticky sidebar** — on desktop screens the control sidebar scrolls in its own pane, so the plot never leaves your view while you adjust settings.
+- **Organized controls** — sidebar settings are grouped into pill tabs (**Axes | Style | Marks | Error | Export**); the file picker, demo-data button, and data summary stay visible at all times.
+
 ### Plot Tab
 
 - **Sample selection** — choose any subset of uploaded samples
