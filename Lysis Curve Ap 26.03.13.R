@@ -167,6 +167,64 @@ parse_excluded_timepoints <- function(text, all_timepoints) {
 # builders below use it; the server also defines it for its own use.
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
+# ── Automatic inside-legend placement ─────────────────────────────────────────
+# Picks the emptiest of the four plot corners for an inside legend.  Time and
+# mean_value are normalised to [0, 1] over their own ranges (log10 for y when
+# the y axis is logarithmic), then the data points falling inside each 35% x
+# 35% corner window are counted.  The corner holding the FEWEST points wins;
+# ties are broken in the order tr, tl, br, bl (top-right first because that is
+# where a rising growth curve leaves the most whitespace least often clipped by
+# the panel border).  Degenerate input (NULL, empty, a single point, or a
+# zero-width range) falls back to the top-right corner.
+#
+# Top level so it is unit-testable without a Shiny session.  Returns
+#   list(pos = c(x, y), just = c(x, y), corner = "tl"|"tr"|"bl"|"br")
+# where pos/just plug straight into theme(legend.position=, legend.justification=).
+pick_legend_corner <- function(plot_data, y_log = FALSE) {
+  corner_spec <- list(
+    tr = list(pos = c(0.98, 0.98), just = c(1, 1)),
+    tl = list(pos = c(0.02, 0.98), just = c(0, 1)),
+    br = list(pos = c(0.98, 0.02), just = c(1, 0)),
+    bl = list(pos = c(0.02, 0.02), just = c(0, 0))
+  )
+  as_result <- function(corner)
+    list(pos = corner_spec[[corner]]$pos,
+         just = corner_spec[[corner]]$just,
+         corner = corner)
+
+  if (is.null(plot_data) || !is.data.frame(plot_data) ||
+      !all(c("time", "mean_value") %in% names(plot_data)))
+    return(as_result("tr"))
+
+  x <- suppressWarnings(as.numeric(plot_data$time))
+  y <- suppressWarnings(as.numeric(plot_data$mean_value))
+  if (isTRUE(y_log)) {
+    y[!is.na(y) & y <= 0] <- NA_real_
+    y <- suppressWarnings(log10(y))
+  }
+  ok <- is.finite(x) & is.finite(y)
+  x  <- x[ok]; y <- y[ok]
+  if (length(x) < 2L) return(as_result("tr"))
+
+  xr <- range(x); yr <- range(y)
+  if (!is.finite(diff(xr)) || diff(xr) <= 0 ||
+      !is.finite(diff(yr)) || diff(yr) <= 0)
+    return(as_result("tr"))
+
+  xn <- (x - xr[1]) / diff(xr)
+  yn <- (y - yr[1]) / diff(yr)
+  w  <- 0.35
+
+  order_pref <- c("tr", "tl", "br", "bl")
+  counts <- c(
+    tr = sum(xn >= 1 - w & yn >= 1 - w),
+    tl = sum(xn <=     w & yn >= 1 - w),
+    br = sum(xn >= 1 - w & yn <=     w),
+    bl = sum(xn <=     w & yn <=     w)
+  )[order_pref]
+  as_result(order_pref[which.min(counts)])
+}
+
 # ── Publication presets ───────────────────────────────────────────────────────
 # Journal print rules: single column = 89 mm = 3.5 in, 1.5 column = 140 mm =
 # 5.51 in, double column = 183 mm = 7.2 in; sans-serif faces; final printed text
@@ -184,35 +242,41 @@ pub_preset_settings <- function(name) {
       export_width = 3.5, export_height = 2.8, export_dpi = 600,
       export_format = "tiff", font_family = "sans",
       title_font_size = 10, axis_label_font_size = 9, axis_text_font_size = 8,
+      legend_font_size = 8,
       line_thickness = 0.7, shape_size = 1.6, color_palette = "colorblind",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     onehalf = list(
       export_width = 5.51, export_height = 4.1, export_dpi = 600,
       export_format = "tiff", font_family = "sans",
       title_font_size = 11, axis_label_font_size = 10, axis_text_font_size = 9,
+      legend_font_size = 9,
       line_thickness = 0.7, shape_size = 1.6, color_palette = "colorblind",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     double = list(
       export_width = 7.2, export_height = 5.0, export_dpi = 600,
       export_format = "tiff", font_family = "sans",
       title_font_size = 12, axis_label_font_size = 10, axis_text_font_size = 9,
+      legend_font_size = 9,
       line_thickness = 0.8, shape_size = 2, color_palette = "colorblind",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     pdfvec = list(
       export_width = 7, export_height = 5, export_dpi = 300,
       export_format = "pdf", font_family = "sans",
       title_font_size = 14, axis_label_font_size = 12, axis_text_font_size = 11,
+      legend_font_size = 11,
       line_thickness = 1, shape_size = 2.5, color_palette = "colorblind",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     slide = list(
       export_width = 10, export_height = 7.5, export_dpi = 300,
       export_format = "png", font_family = "sans",
       title_font_size = 22, axis_label_font_size = 20, axis_text_font_size = 18,
+      legend_font_size = 18,
       line_thickness = 1.6, shape_size = 3.5),
     # Visual only — deliberately leaves export size / format alone.
     prism = list(
       use_advanced_ticks = TRUE, bold_title = TRUE,
       title_font_size = 18, axis_label_font_size = 16, axis_text_font_size = 14,
+      legend_font_size = 14,
       line_thickness = 1.2, shape_size = 2.6,
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     NULL)
@@ -267,6 +331,33 @@ CE_SHAPE_CHOICES <- c("Circle" = 16, "Square" = 15, "Triangle Up" = 17,
 CE_LINETYPE_CHOICES <- c("Solid" = "solid", "Dashed" = "dashed",
                          "Dotted" = "dotted", "DotDash" = "dotdash",
                          "LongDash" = "longdash", "TwoDash" = "twodash")
+
+# Font families offered by the sidebar Axis Settings AND by the click-to-edit
+# modals — one constant so the two never drift apart.
+FONT_FAMILY_CHOICES <- c("Microsoft Sans Serif"         = "Microsoft Sans Serif",
+                         "Segoe UI"                     = "Segoe UI",
+                         "Sans Serif (Arial/Helvetica)" = "sans",
+                         "Serif (Times New Roman)"      = "serif",
+                         "Monospace (Courier New)"      = "mono",
+                         "Helvetica Neue"               = "Helvetica Neue",
+                         "Garamond"                     = "Garamond",
+                         "Palatino"                     = "Palatino")
+# Named system fonts render via ragg/systemfonts by family name; on machines
+# where a font is absent the engine falls back to the default sans silently.
+
+# Legend placement modes. "auto_inside" drops the legend into the emptiest
+# corner (see pick_legend_corner); "direct" replaces the legend box with
+# coloured labels at the end of each line.  Shared by the sidebar control and
+# the click-to-edit legend modal.
+LEGEND_POSITION_CHOICES <- c("Right"  = "right", "Left" = "left",
+                             "Top"    = "top",   "Bottom" = "bottom",
+                             "Inside (custom)"                     = "inside",
+                             "Inside — auto (least crowded corner)" = "auto_inside",
+                             "Direct labels at line ends"          = "direct",
+                             "None"   = "none")
+
+CE_TEXT_FACE_CHOICES <- c("Plain" = "plain", "Bold" = "bold",
+                          "Italic" = "italic", "Bold Italic" = "bold.italic")
 
 # ── Analysis report helpers ───────────────────────────────────────────────────
 # Plain-language definitions of every column produced by
@@ -1582,13 +1673,8 @@ ui <- fluidPage(
                        ),
                        h5("Font Settings", style = "margin-top:12px;"),
                        selectInput("font_family", "Font Family:",
-                                   choices  = c("Sans Serif (Arial/Helvetica)" = "sans",
-                                                "Serif (Times New Roman)"      = "serif",
-                                                "Monospace (Courier New)"      = "mono",
-                                                "Helvetica Neue"               = "Helvetica Neue",
-                                                "Garamond"                     = "Garamond",
-                                                "Palatino"                     = "Palatino"),
-                                   selected = "sans"),
+                                   choices  = FONT_FAMILY_CHOICES,
+                                   selected = "Microsoft Sans Serif"),
                        numericInput("title_font_size",      "Title Font Size:",  20, 8, 48),
                        numericInput("axis_label_font_size", "Axis Label Size:",  20, 8, 36),
                        numericInput("axis_text_font_size",  "Axis Text Size:",   16, 6, 32),
@@ -1689,13 +1775,13 @@ ui <- fluidPage(
                    tags$summary("Line & Point Settings"),
                    div(class = "panel-section",
                        h4("Line Options", class = "panel-title"),
-                       sliderInput("line_thickness", "Line Thickness:", 0.1, 3, 1, 0.1)
+                       sliderInput("line_thickness", "Line Thickness:", 0.1, 3, 1.2, 0.1)
                    ),
                    div(class = "panel-section",
                        h4("Point Options", class = "panel-title"),
                        checkboxInput("show_points", "Show Points", TRUE),
                        conditionalPanel(condition = "input.show_points == true",
-                                        sliderInput("shape_size",   "Point Size:",   0.5, 8, 3,   0.1),
+                                        sliderInput("shape_size",   "Point Size:",   0.5, 8, 4,   0.1),
                                         sliderInput("point_stroke", "Stroke Width:", 0,   2, 0.5, 0.1)
                        ),
                    )
@@ -1706,16 +1792,14 @@ ui <- fluidPage(
                    div(class = "panel-section",
                        fluidRow(
                          column(6, selectInput("legend_position", "Position:",
-                                               choices = c("Right" = "right", "Left" = "left",
-                                                           "Top" = "top", "Bottom" = "bottom",
-                                                           "Inside (custom)" = "inside",
-                                                           "None" = "none"),
+                                               choices  = LEGEND_POSITION_CHOICES,
                                                selected = "right")),
                          column(6, selectInput("legend_text_face", "Text Style:",
-                                               choices = c("Plain" = "plain", "Bold" = "bold",
-                                                           "Italic" = "italic", "Bold Italic" = "bold.italic"),
+                                               choices = CE_TEXT_FACE_CHOICES,
                                                selected = "plain"))
                        ),
+                       p(style = "font-size:.80em;color:#888;margin-top:-6px;margin-bottom:6px;",
+                         "Tip: 'Direct labels at line ends' names each curve in its own color — no legend box needed."),
                        # Inside-plot positioning controls
                        conditionalPanel(
                          condition = "input.legend_position == 'inside'",
@@ -1742,7 +1826,7 @@ ui <- fluidPage(
                        ),
                        # Reserved space control — shown when legend won't occupy external space
                        conditionalPanel(
-                         condition = "input.legend_position == 'none' || input.legend_position == 'inside' || input.show_end_labels == true",
+                         condition = "input.legend_position == 'none' || input.legend_position == 'inside' || input.legend_position == 'auto_inside' || input.legend_position == 'direct' || input.show_end_labels == true",
                          fluidRow(style = "margin-top:6px;",
                            column(12, numericInput("legend_reserve_space",
                                                    "Reserved right space (pt):", 130, 0, 400, 10)),
@@ -1756,8 +1840,13 @@ ui <- fluidPage(
                          column(12, p(style = "font-size:.80em;color:#888;margin-top:0;",
                                       "Long names are wrapped at this width so the graph panel area stays constant. Set to 60 to disable wrapping."))
                        ),
+                       fluidRow(style = "margin-top:6px;",
+                         column(12, numericInput("legend_font_size",
+                                                 "Legend Font Size (blank = follow Axis Text):",
+                                                 value = 18, min = 5, max = 32))
+                       ),
                        p(style = "font-size:.82em;color:#888;margin-top:4px;margin-bottom:0;",
-                         "Font size follows Axis Text size in Axis Settings.")
+                         "(leave blank to follow Axis Text size)")
                    )
                  ),
                  # ── Variable Styling ──────────────────────────────────────────────────────
@@ -1806,7 +1895,9 @@ ui <- fluidPage(
                    tags$summary("Label Options"),
                    div(class = "panel-section",
                        checkboxInput("show_end_labels", "Show End-of-Line Labels", FALSE),
-                       conditionalPanel(condition = "input.show_end_labels == true",
+                       p(style = "font-size:.80em;color:#888;margin-top:-6px;margin-bottom:6px;",
+                         "Shortcut: set Legend > Position to 'Direct labels at line ends'."),
+                       conditionalPanel(condition = "input.show_end_labels == true || input.legend_position == 'direct'",
                                         numericInput("label_font_size", "Label Font Size (pt):", 12, 3, 36),
                                         checkboxInput("label_bold",  "Bold Labels",              TRUE),
                                         numericInput("label_offset", "Label Offset (% x-axis):", 3.5, 0, 20)
@@ -3711,18 +3802,21 @@ server <- function(input, output, session) {
       y_expand_top          = 0.05,       x_axis_label           = "Time (minutes)",
       y_axis_label          = "A550",     plot_title             = "",
       plot_subtitle         = "",         show_major_gridlines   = FALSE,
-      show_minor_gridlines  = FALSE,      font_family            = "sans",
+      show_minor_gridlines  = FALSE,      font_family            = "Microsoft Sans Serif",
       title_font_size       = 20,         axis_label_font_size   = 20,
       axis_text_font_size   = 16,         bold_title             = TRUE,
       italic_axis_labels    = FALSE,      axis_text_angle        = "0",
       enable_highlighting   = FALSE,      enable_time_markers    = FALSE,
-      color_palette         = "custom",   line_thickness         = 1,
-      show_points           = TRUE,       shape_size             = 3,
+      color_palette         = "custom",   line_thickness         = 1.2,
+      show_points           = TRUE,       shape_size             = 4,
       point_stroke          = 0.5,        show_end_labels        = FALSE,
       label_font_size       = 12,         label_bold             = TRUE,
       label_offset          = 3.5,        legend_x               = 0.85,
       legend_y              = 0.95,       legend_no_box          = FALSE,
       legend_click_mode     = FALSE,      legend_reserve_space   = 130,
+      # NA_real_ (not bare NA) so the loop below routes it to updateNumericInput
+      # rather than updateCheckboxInput — blank means "follow Axis Text size".
+      legend_font_size      = 18,
       error_type             = "sem",
       error_display_mode    = "bars",     error_multiplier       = 1,
       asymmetric_error      = FALSE,      error_bar_style        = "T",
@@ -4282,6 +4376,15 @@ server <- function(input, output, session) {
       for (i in seq_len(n_vars))
         if (!samples[i] %in% highlight_samples) display_colors[i] <- "#DDDDDD"
     
+    # ── Legend mode resolution ────────────────────────────────────────────────
+    # Shared by the end-of-line label layer and the theme block below.
+    #   "direct"      -> no legend box; end-of-line labels forced ON.
+    #   "auto_inside" -> legend dropped into the emptiest corner.
+    # The show_end_labels checkbox stays additive for every other mode.
+    lp_mode        <- if (!is.null(input$legend_position)) input$legend_position else "right"
+    direct_labels  <- identical(lp_mode, "direct")
+    use_end_labels <- isTRUE(input$show_end_labels) || direct_labels
+
     plot_data$variable <- factor(plot_data$variable, levels = samples)
     p <- ggplot(plot_data,
                 aes(x = time, y = mean_value, group = variable,
@@ -4498,16 +4601,26 @@ server <- function(input, output, session) {
                                  labels = leg_labels, guide = "none")
     }
     
-    if (input$show_end_labels) {
+    if (use_end_labels) {
       mt  <- max(plot_data$time, na.rm = TRUE)
-      off <- mt * (input$label_offset / 100)
+      lbl_off  <- suppressWarnings(as.numeric(input$label_offset    %||% NA))
+      lbl_size <- suppressWarnings(as.numeric(input$label_font_size %||% NA))
+      if (length(lbl_off)  != 1 || !is.finite(lbl_off))  lbl_off  <- 3.5
+      if (length(lbl_size) != 1 || !is.finite(lbl_size)) lbl_size <- 12
+      off <- mt * (lbl_off / 100)
       ep  <- plot_data %>% group_by(variable) %>% filter(time == max(time)) %>% ungroup()
+      # Name each curve with its CUSTOM legend label (already wrapped to
+      # legend_wrap_width by resolve_aesthetics()), not the raw column name.
+      ep_lab <- unname(leg_labels[as.character(ep$variable)])
+      miss   <- is.na(ep_lab) | !nzchar(ep_lab)
+      ep_lab[miss] <- as.character(ep$variable)[miss]
+      ep$end_label <- ep_lab
       p   <- p + geom_text_repel(data = ep,
-                                 aes(label = variable, color = variable, x = Inf, y = mean_value),
+                                 aes(label = end_label, color = variable, x = Inf, y = mean_value),
                                  direction = "y", xlim = c(mt + off, Inf),
                                  min.segment.length = Inf, hjust = 0,
-                                 size = input$label_font_size / 2.835,
-                                 fontface = if (input$label_bold) "bold" else "plain")
+                                 size = lbl_size / 2.835,
+                                 fontface = if (isTRUE(input$label_bold)) "bold" else "plain")
     }
     
     p <- p +
@@ -4602,7 +4715,24 @@ server <- function(input, output, session) {
     min_col <- if (!is.null(input$minor_gridline_color) && input$minor_gridline_color == "custom")
       input$minor_gridline_color_custom else input$minor_gridline_color
     x_ang   <- as.numeric(input$axis_text_angle)
-    
+
+    # Legend font size: explicit legend_font_size wins when it is a finite
+    # number, otherwise fall back to the Axis Text / Axis Label sizes as before.
+    num1 <- function(v, default) {
+      v <- suppressWarnings(as.numeric(v %||% NA))
+      if (length(v) == 1 && is.finite(v)) v else default
+    }
+    lfs             <- num1(input$legend_font_size, NA_real_)
+    legend_text_pt  <- if (is.finite(lfs)) lfs else num1(input$axis_text_font_size,  12)
+    legend_title_pt <- if (is.finite(lfs)) lfs else num1(input$axis_label_font_size, 14)
+
+    # Auto inside placement — least crowded corner of the current data.
+    auto_corner <- if (identical(lp_mode, "auto_inside") && !use_end_labels)
+      tryCatch(pick_legend_corner(plot_data,
+                                 y_log = identical(input$y_scale_type, "log")),
+               error = function(e) NULL)
+    else NULL
+
     p <- p + base_t + theme(
       text             = element_text(family = input$font_family),
       plot.title       = element_text(size = input$title_font_size,       face = tf, hjust = 0.5),
@@ -4618,34 +4748,35 @@ server <- function(input, output, session) {
       axis.ticks        = element_line(color = "black", linewidth = 0.5),
       axis.ticks.length = unit(0.15, "cm"),
       legend.position   = {
-        lp <- if (!is.null(input$legend_position)) input$legend_position else "right"
-        if (isTRUE(input$show_end_labels)) "none"
-        else if (lp == "inside") c(
+        if (use_end_labels) "none"
+        else if (!is.null(auto_corner)) auto_corner$pos
+        else if (lp_mode == "inside") c(
           if (!is.null(input$legend_x)) input$legend_x else 0.85,
           if (!is.null(input$legend_y)) input$legend_y else 0.95
         )
-        else lp
+        else lp_mode
       },
-      legend.justification = if (!is.null(input$legend_position) && input$legend_position == "inside" && !isTRUE(input$show_end_labels)) c("right", "top") else "center",
+      legend.justification =
+        if (use_end_labels) "center"
+        else if (!is.null(auto_corner)) auto_corner$just
+        else if (lp_mode == "inside") c("right", "top")
+        else "center",
       legend.background = if (isTRUE(input$legend_no_box)) element_blank()
                           else element_rect(fill = "white", color = "gray80"),
       legend.box.background = if (isTRUE(input$legend_no_box)) element_blank()
                               else element_rect(fill = NA),
       legend.key        = element_rect(fill = NA),
-      legend.text       = element_text(size  = if (!is.null(input$axis_text_font_size))  input$axis_text_font_size  else 12,
+      legend.text       = element_text(size  = legend_text_pt,
                                        face  = if (!is.null(input$legend_text_face))  input$legend_text_face  else "plain"),
-      legend.title      = element_text(size  = if (!is.null(input$axis_label_font_size)) input$axis_label_font_size else 14,
+      legend.title      = element_text(size  = legend_title_pt,
                                        face  = if (!is.null(input$legend_text_face))  input$legend_text_face  else "plain"),
       panel.border      = element_rect(color = "black", fill = NA, linewidth = 0.5)
     )
 
     # Reserve a fixed right margin when the legend isn't consuming space externally,
     # so the panel stays the same size whether legend is visible or not.
-    eff_leg <- {
-      lp <- if (!is.null(input$legend_position)) input$legend_position else "right"
-      if (isTRUE(input$show_end_labels)) "none" else lp
-    }
-    if (eff_leg %in% c("none", "inside")) {
+    eff_leg <- if (use_end_labels) "none" else lp_mode
+    if (eff_leg %in% c("none", "inside", "auto_inside")) {
       rsv <- if (!is.null(input$legend_reserve_space)) input$legend_reserve_space else 130
       p <- p + theme(plot.margin = margin(5, rsv, 5, 5, "pt"))
     }
@@ -4775,7 +4906,9 @@ server <- function(input, output, session) {
   # already applied by resolve_aesthetics().
   legend_extra_px <- reactive({
     lp       <- if (!is.null(input$legend_position)) input$legend_position else "right"
-    show_end <- isTRUE(input$show_end_labels)
+    # "direct" hides the legend box (and forces end labels), so it needs no
+    # extra width — same as none / inside / auto_inside.
+    show_end <- isTRUE(input$show_end_labels) || identical(lp, "direct")
     if (show_end || lp != "right") return(0L)
     req(input$selected_samples)
     ll <- tryCatch(resolve_aesthetics(input$selected_samples)$leg_labels,
@@ -4783,7 +4916,11 @@ server <- function(input, output, session) {
     if (length(ll) == 0) return(0L)
     # Labels may already contain newlines from str_wrap — measure longest line
     max_chars <- max(nchar(unlist(strsplit(ll, "\n"))), na.rm = TRUE)
-    font_sz   <- if (!is.null(input$axis_text_font_size)) input$axis_text_font_size else 12
+    # Legend text follows legend_font_size when set, else Axis Text size.
+    lfs       <- suppressWarnings(as.numeric(input$legend_font_size %||% NA))
+    font_sz   <- if (length(lfs) == 1 && is.finite(lfs)) lfs
+                 else if (!is.null(input$axis_text_font_size)) input$axis_text_font_size else 12
+    if (!is.numeric(font_sz) || length(font_sz) != 1 || !is.finite(font_sz)) font_sz <- 12
     # 1 pt = 1.333 px at 96 DPI.  Key ≈ 3 em wide; text ≈ 0.65 em/char; 40 px padding.
     em_px <- font_sz * 1.333
     as.integer(ceiling(3 * em_px + max_chars * 0.65 * em_px + 40))
@@ -4845,6 +4982,8 @@ server <- function(input, output, session) {
       textInput("ce_subtitle", "Subtitle:",   value = input$plot_subtitle %||% ""),
       numericInput("ce_title_size", "Title font size (pt):",
                    value = input$title_font_size %||% 20, min = 6, max = 60, step = 1),
+      selectInput("ce_title_font", "Font family:", choices = FONT_FAMILY_CHOICES,
+                  selected = input$font_family %||% "sans"),
       checkboxInput("ce_title_bold", "Bold title", value = isTRUE(input$bold_title)),
       footer = ce_modal_footer("ce_apply_title")
     ))
@@ -4854,6 +4993,8 @@ server <- function(input, output, session) {
     updateTextInput(session, "plot_subtitle", value = input$ce_subtitle %||% "")
     ts <- input$ce_title_size
     if (!is.null(ts) && is.finite(ts)) updateNumericInput(session, "title_font_size", value = ts)
+    if (!is.null(input$ce_title_font) && nzchar(input$ce_title_font))
+      updateSelectInput(session, "font_family", selected = input$ce_title_font)
     updateCheckboxInput(session, "bold_title", value = isTRUE(input$ce_title_bold))
     removeModal()
   })
@@ -4865,8 +5006,16 @@ server <- function(input, output, session) {
       size = "m", easyClose = TRUE,
       textInput("ce_axis_label", if (is_x) "X-axis label:" else "Y-axis label:",
                 value = (if (is_x) input$x_axis_label else input$y_axis_label) %||% ""),
-      numericInput("ce_axis_size", "Axis label font size (pt):",
-                   value = input$axis_label_font_size %||% 20, min = 6, max = 48, step = 1),
+      fluidRow(
+        column(6, numericInput("ce_axis_size", "Axis label font size (pt):",
+                               value = input$axis_label_font_size %||% 20,
+                               min = 6, max = 48, step = 1)),
+        column(6, numericInput("ce_axis_text_size", "Tick text font size (pt):",
+                               value = input$axis_text_font_size %||% 16,
+                               min = 4, max = 40, step = 1))
+      ),
+      selectInput("ce_axis_font", "Font family:", choices = FONT_FAMILY_CHOICES,
+                  selected = input$font_family %||% "sans"),
       footer = ce_modal_footer(if (is_x) "ce_apply_xlab" else "ce_apply_ylab")
     ))
   }
@@ -4875,6 +5024,11 @@ server <- function(input, output, session) {
     as_ <- input$ce_axis_size
     if (!is.null(as_) && is.finite(as_))
       updateNumericInput(session, "axis_label_font_size", value = as_)
+    ats <- input$ce_axis_text_size
+    if (!is.null(ats) && is.finite(ats))
+      updateNumericInput(session, "axis_text_font_size", value = ats)
+    if (!is.null(input$ce_axis_font) && nzchar(input$ce_axis_font))
+      updateSelectInput(session, "font_family", selected = input$ce_axis_font)
     removeModal()
   }
   observeEvent(input$ce_apply_xlab, ce_apply_axis("x_axis_label"))
@@ -4921,8 +5075,22 @@ server <- function(input, output, session) {
                               choices = CE_SHAPE_CHOICES, selected = st$shape))
       ),
       checkboxInput("ce_leg_filled", "Filled shape", value = st$filled),
+      tags$hr(style = "margin:10px 0;"),
+      # Whole-legend settings (not per-sample).
+      fluidRow(
+        column(6, numericInput("ce_leg_font_size", "Legend font size (blank = Axis Text):",
+                               value = input$legend_font_size %||% NA,
+                               min = 5, max = 32, step = 1)),
+        column(6, selectInput("ce_leg_face", "Legend text style:",
+                              choices  = CE_TEXT_FACE_CHOICES,
+                              selected = input$legend_text_face %||% "plain"))
+      ),
+      selectInput("ce_leg_pos", "Legend position:",
+                  choices  = LEGEND_POSITION_CHOICES,
+                  selected = input$legend_position %||% "right"),
       p(style = "font-size:.82em;color:#888;margin-bottom:0;",
-        "Changes are written to this sample's controls under Style → Variable Styling."),
+        "Changes are written to this sample's controls under Style → Variable Styling; ",
+        "font size, text style and position apply to the whole legend."),
       footer = ce_modal_footer("ce_apply_legend")
     ))
   }
@@ -4956,6 +5124,14 @@ server <- function(input, output, session) {
     if (!is.null(input$ce_leg_shape))
       updateSelectInput(session, paste0("shape_", vid), selected = as.character(input$ce_leg_shape))
     updateCheckboxInput(session, paste0("shape_filled_", vid), value = isTRUE(input$ce_leg_filled))
+    # Whole-legend settings
+    lfs <- suppressWarnings(as.numeric(input$ce_leg_font_size %||% NA))
+    updateNumericInput(session, "legend_font_size",
+                       value = if (length(lfs) == 1 && is.finite(lfs)) lfs else NA_real_)
+    if (!is.null(input$ce_leg_face) && nzchar(input$ce_leg_face))
+      updateSelectInput(session, "legend_text_face", selected = input$ce_leg_face)
+    if (!is.null(input$ce_leg_pos) && nzchar(input$ce_leg_pos))
+      updateSelectInput(session, "legend_position", selected = input$ce_leg_pos)
     removeModal()
   })
 
@@ -4976,6 +5152,8 @@ server <- function(input, output, session) {
         column(4, numericInput("ce_g_text_size",  "Axis text (pt):",
                                value = input$axis_text_font_size %||% 16, min = 4, max = 40))
       ),
+      selectInput("ce_g_font", "Font family:", choices = FONT_FAMILY_CHOICES,
+                  selected = input$font_family %||% "sans"),
       footer = ce_modal_footer("ce_apply_general")
     ))
   }
@@ -4990,6 +5168,8 @@ server <- function(input, output, session) {
       v <- input[[p[1]]]
       if (!is.null(v) && is.finite(v)) updateNumericInput(session, p[2], value = v)
     }
+    if (!is.null(input$ce_g_font) && nzchar(input$ce_g_font))
+      updateSelectInput(session, "font_family", selected = input$ce_g_font)
     removeModal()
   })
 
@@ -5042,7 +5222,9 @@ server <- function(input, output, session) {
       )
       total_w_in <- w_in + extra_in
       switch(fmt,
-        pdf  = grDevices::pdf( file, width = total_w_in, height = h_in),
+        # cairo_pdf embeds system fonts (Microsoft Sans Serif, Segoe UI, ...)
+        # that the base pdf() device cannot map
+        pdf  = grDevices::cairo_pdf(file, width = total_w_in, height = h_in),
         svg  = grDevices::svg( file, width = total_w_in, height = h_in),
         png  = grDevices::png( file, width = total_w_in * dpi, height = h_in * dpi,
                                res = dpi, units = "px"),
