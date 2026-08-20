@@ -355,7 +355,23 @@ FONT_FAMILY_CHOICES <- c("Microsoft Sans Serif"         = "Microsoft Sans Serif"
 # Limitation: plotmath has no line break, so a string that contains BOTH a
 # newline and markup cannot be rendered; those fall back to the raw text.
 MARKUP_RE   <- "(_|\\^)\\{[^}]*\\}"
-MARKUP_HINT <- "Sub/superscript: A_{550}, 10^{-7} (not with multi-line text)"
+MARKUP_HINT <- paste0(
+  "Highlight characters, then click a button or press Ctrl+= (subscript) / ",
+  "Ctrl+Shift+= (superscript). Click again to undo. ",
+  "Advanced: A_{550} / 10^{-7} markup also works (not with multi-line text).")
+
+# Sub/superscript buttons that act on the LAST text field the user was in
+# (client-side csConvertLast; onmousedown keeps the selection alive).
+markup_buttons_last <- function()
+  div(style = "margin:2px 0 6px 0;",
+      tags$button(type = "button", class = "btn btn-default btn-xs",
+                  style = "font-size:.8em;padding:1px 8px;margin-right:6px;",
+                  onmousedown = "csConvertLast('sub', event);",
+                  HTML("x<sub>2</sub> Subscript")),
+      tags$button(type = "button", class = "btn btn-default btn-xs",
+                  style = "font-size:.8em;padding:1px 8px;",
+                  onmousedown = "csConvertLast('sup', event);",
+                  HTML("x<sup>2</sup> Superscript")))
 
 # TRUE for each element that carries at least one _{...} / ^{...} segment.
 markup_has <- function(s) {
@@ -1524,7 +1540,84 @@ ui <- fluidPage(
       "Shiny.addCustomMessageHandler('updateColorPreview', function(msg) {
          var el = document.getElementById(msg.id);
          if (el) el.style.backgroundColor = msg.color;
-       });"
+       });
+
+       // ── Subscript / superscript: select text, convert to Unicode ──
+       // Word-style shortcuts: Ctrl+=  subscript, Ctrl+Shift+=  superscript.
+       // Toggles back to plain when the selection is already converted.
+       var CS_SUB = {'0':'₀','1':'₁','2':'₂','3':'₃','4':'₄',
+                     '5':'₅','6':'₆','7':'₇','8':'₈','9':'₉',
+                     '+':'₊','-':'₋','=':'₌','(':'₍',')':'₎',
+                     'a':'ₐ','e':'ₑ','h':'ₕ','i':'ᵢ','j':'ⱼ',
+                     'k':'ₖ','l':'ₗ','m':'ₘ','n':'ₙ','o':'ₒ',
+                     'p':'ₚ','r':'ᵣ','s':'ₛ','t':'ₜ','u':'ᵤ',
+                     'v':'ᵥ','x':'ₓ'};
+       var CS_SUP = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴',
+                     '5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹',
+                     '+':'⁺','-':'⁻','=':'⁼','(':'⁽',')':'⁾',
+                     'a':'ᵃ','b':'ᵇ','c':'ᶜ','d':'ᵈ','e':'ᵉ',
+                     'f':'ᶠ','g':'ᵍ','h':'ʰ','i':'ⁱ','j':'ʲ',
+                     'k':'ᵏ','l':'ˡ','m':'ᵐ','n':'ⁿ','o':'ᵒ',
+                     'p':'ᵖ','r':'ʳ','s':'ˢ','t':'ᵗ','u':'ᵘ',
+                     'v':'ᵛ','w':'ʷ','x':'ˣ','y':'ʸ','z':'ᶻ'};
+       function csRev(map) {
+         var r = {}; for (var k in map) r[map[k]] = k; return r;
+       }
+       var CS_SUB_R = csRev(CS_SUB), CS_SUP_R = csRev(CS_SUP);
+       function csApply(txt, map, rmap) {
+         // toggle: if every convertible char is already converted, revert
+         var chars = txt.split(''), converted = 0, convertible = 0;
+         chars.forEach(function(c){ if (rmap[c]) converted++;
+                                    if (map[c.toLowerCase()] || map[c]) convertible++; });
+         if (converted > 0 && convertible === 0)
+           return chars.map(function(c){ return rmap[c] || c; }).join('');
+         return chars.map(function(c){
+           return map[c] || map[c.toLowerCase()] || c; }).join('');
+       }
+       function csConvert(id, mode) {
+         var el = document.getElementById(id);
+         if (!el) return;
+         var s = el.selectionStart, e = el.selectionEnd;
+         if (s === e) {                       // nothing selected: brief hint
+           var old = el.placeholder;
+           el.placeholder = 'select the characters to convert first';
+           setTimeout(function(){ el.placeholder = old; }, 1600);
+           el.focus(); return;
+         }
+         var map  = mode === 'sub' ? CS_SUB   : CS_SUP;
+         var rmap = mode === 'sub' ? CS_SUB_R : CS_SUP_R;
+         var out  = csApply(el.value.substring(s, e), map, rmap);
+         el.value = el.value.substring(0, s) + out + el.value.substring(e);
+         el.setSelectionRange(s, s + out.length);
+         el.dispatchEvent(new Event('input',  {bubbles: true}));
+         el.dispatchEvent(new Event('change', {bubbles: true}));
+         el.focus();
+       }
+       document.addEventListener('keydown', function(e) {
+         if (!e.ctrlKey || e.altKey) return;
+         if (e.key !== '=' && e.key !== '+') return;
+         var t = document.activeElement;
+         if (!t || !t.id) return;
+         var tag = (t.tagName || '').toLowerCase();
+         if (tag !== 'textarea' && !(tag === 'input' && t.type === 'text')) return;
+         e.preventDefault();
+         csConvert(t.id, (e.shiftKey || e.key === '+') ? 'sup' : 'sub');
+       });
+       // remember the last text field the user was in, so the sidebar
+       // x2-buttons can act on whichever label field was last edited
+       document.addEventListener('focusin', function(e) {
+         var t = e.target;
+         if (!t || !t.id) return;
+         var tag = (t.tagName || '').toLowerCase();
+         if (tag === 'textarea' || (tag === 'input' && t.type === 'text'))
+           window.__csLastText = t.id;
+       });
+       // mousedown (not click) so the button press does not first steal
+       // focus and collapse the selection in the text field
+       function csConvertLast(mode, ev) {
+         if (ev) ev.preventDefault();
+         if (window.__csLastText) csConvert(window.__csLastText, mode);
+       }"
     )),
     uiOutput("night_mode_css"),
     tags$style(HTML("
@@ -1725,6 +1818,7 @@ ui <- fluidPage(
                        textInput("y_axis_label",  "Y-axis Label:",  "A550"),
                        textInput("plot_title",    "Plot Title:",    ""),
                        textInput("plot_subtitle", "Plot Subtitle:", ""),
+                       markup_buttons_last(),
                        p(style = "font-size:.8em;color:#888;margin:-6px 0 10px 0;", MARKUP_HINT),
                        h5("Gridlines", style = "margin-top:12px;"),
                        checkboxInput("show_major_gridlines", "Show Major Gridlines", FALSE),
@@ -1940,6 +2034,7 @@ ui <- fluidPage(
                          column(2, actionButton("samples_deselect_all", "None",
                                                 style = "margin-top:25px;width:100%;font-size:.8em;background:#dc3545;color:white;border:none;"))
                        ),
+                       markup_buttons_last(),
                        p(style = "font-size:.8em;color:#888;margin:0 0 8px 0;", MARKUP_HINT),
                        uiOutput("var_settings")
                    )
@@ -5092,37 +5187,31 @@ server <- function(input, output, session) {
             actionButton(apply_id, "Apply", class = "btn-primary"))
 
   # ── Sub/superscript helpers for the click-to-edit modals ────────────────────
-  # Two buttons that append "_{}" / "^{}" to one text field, plus the hint.
-  # `tag` names the button pair, `target` is the input the observers write to.
-  ce_markup_row <- function(tag)
+  # Highlight-and-click sub/superscript: buttons convert the SELECTED text of
+  # `target` to Unicode sub/superscript in place (client-side csConvert, see
+  # tags$script). onmousedown + preventDefault keeps the selection alive.
+  # Clicking again on converted text toggles it back.
+  ce_markup_row <- function(target)
     tagList(
       div(style = "margin:-8px 0 6px 0;",
-          actionButton(paste0("ce_ins_sub_", tag), "+ sub _{ }",
-                       style = "font-size:.78em;padding:2px 8px;margin-right:6px;"),
-          actionButton(paste0("ce_ins_sup_", tag), "+ sup ^{ }",
-                       style = "font-size:.78em;padding:2px 8px;")),
+          tags$button(type = "button", class = "btn btn-default btn-sm",
+                      style = "font-size:.82em;padding:2px 10px;margin-right:6px;",
+                      onmousedown = sprintf(
+                        "event.preventDefault(); csConvert('%s','sub');", target),
+                      HTML("x<sub>2</sub> Subscript")),
+          tags$button(type = "button", class = "btn btn-default btn-sm",
+                      style = "font-size:.82em;padding:2px 10px;",
+                      onmousedown = sprintf(
+                        "event.preventDefault(); csConvert('%s','sup');", target),
+                      HTML("x<sup>2</sup> Superscript"))),
       p(style = "font-size:.8em;color:#888;margin:0 0 10px 0;", MARKUP_HINT))
-
-  ce_bind_markup <- function(tag, target) {
-    append_to <- function(what)
-      updateTextInput(session, target,
-                      value = paste0(input[[target]] %||% "", what))
-    observeEvent(input[[paste0("ce_ins_sub_", tag)]], append_to("_{}"),
-                 ignoreInit = TRUE)
-    observeEvent(input[[paste0("ce_ins_sup_", tag)]], append_to("^{}"),
-                 ignoreInit = TRUE)
-  }
-  ce_bind_markup("title", "ce_title")
-  ce_bind_markup("axis",  "ce_axis_label")
-  ce_bind_markup("leg",   "ce_leg_label")
-  ce_bind_markup("gen",   "ce_g_title")
 
   ce_title_editor <- function() {
     showModal(modalDialog(
       title = "Edit plot title", size = "m", easyClose = TRUE,
       textInput("ce_title",    "Plot title:", value = input$plot_title    %||% ""),
       textInput("ce_subtitle", "Subtitle:",   value = input$plot_subtitle %||% ""),
-      ce_markup_row("title"),
+      ce_markup_row("ce_title"),
       numericInput("ce_title_size", "Title font size (pt):",
                    value = input$title_font_size %||% 20, min = 6, max = 60, step = 1),
       selectInput("ce_title_font", "Font family:", choices = FONT_FAMILY_CHOICES,
@@ -5149,7 +5238,7 @@ server <- function(input, output, session) {
       size = "m", easyClose = TRUE,
       textInput("ce_axis_label", if (is_x) "X-axis label:" else "Y-axis label:",
                 value = (if (is_x) input$x_axis_label else input$y_axis_label) %||% ""),
-      ce_markup_row("axis"),
+      ce_markup_row("ce_axis_label"),
       fluidRow(
         column(6, numericInput("ce_axis_size", "Axis label font size (pt):",
                                value = input$axis_label_font_size %||% 20,
@@ -5207,7 +5296,7 @@ server <- function(input, output, session) {
       title = "Edit legend entry", size = "m", easyClose = TRUE,
       selectInput("ce_leg_sample", "Sample:", choices = samps, selected = vn),
       textInput("ce_leg_label", "Legend label:", value = st$label),
-      ce_markup_row("leg"),
+      ce_markup_row("ce_leg_label"),
       fluidRow(
         column(6, selectInput("ce_leg_color_preset", "Color:",
                               choices = CE_COLOR_CHOICES, selected = st$preset)),
@@ -5289,7 +5378,7 @@ server <- function(input, output, session) {
         column(6, textInput("ce_g_xlab", "X-axis label:", value = input$x_axis_label %||% "")),
         column(6, textInput("ce_g_ylab", "Y-axis label:", value = input$y_axis_label %||% ""))
       ),
-      ce_markup_row("gen"),
+      ce_markup_row("ce_g_title"),
       fluidRow(
         column(4, numericInput("ce_g_title_size", "Title (pt):",
                                value = input$title_font_size %||% 20, min = 6, max = 60)),
