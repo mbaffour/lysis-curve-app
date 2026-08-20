@@ -12,6 +12,20 @@
 
 ---
 
+## Documentation
+
+| Doc | What's inside |
+|---|---|
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Complete walkthrough: launching, styling, click-to-edit, sub/superscripts, legend modes, themes, presets, troubleshooting |
+| [docs/METRICS_REFERENCE.md](docs/METRICS_REFERENCE.md) | Every metric with its exact formula, literature source, and pitfalls — including the virulence-index vs PhageScore distinction |
+| [docs/DATA_FORMATS.md](docs/DATA_FORMATS.md) | CSV formats, both replicate conventions, detection rules, edge cases |
+| [docs/REPORTS_AND_EXPORTS.md](docs/REPORTS_AND_EXPORTS.md) | Figure formats, publication presets, CSVs, batch ZIP, single-file HTML/PDF reports |
+| [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md) | Architecture, data-pipeline invariants, testing patterns, gotchas, release checklist |
+| [CHANGELOG.md](CHANGELOG.md) | What changed, when, and why |
+| `tests/` | Verification suites: `Rscript tests/test_analyzer.R` (26 checks) and `Rscript tests/stress_test_analyzer.R` (41 checks) |
+
+---
+
 ## Table of Contents
 
 - [Overview](#overview)
