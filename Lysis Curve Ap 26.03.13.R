@@ -345,6 +345,76 @@ FONT_FAMILY_CHOICES <- c("Microsoft Sans Serif"         = "Microsoft Sans Serif"
 # Named system fonts render via ragg/systemfonts by family name; on machines
 # where a font is absent the engine falls back to the default sans silently.
 
+# ── Sub/superscript markup ────────────────────────────────────────────────────
+# One user-facing convention for every piece of plot text: `_{...}` is a
+# subscript and `^{...}` a superscript, anywhere in the string —
+#   "A_{550}"  "OD_{600} at 37 C"  "10^{-7} PFU mL^{-1}"  "&#916;cI^{ts}"
+# Strings without the markup are returned untouched, so the plain-text path
+# through ggplot is byte-for-byte what it was before this feature existed.
+#
+# Limitation: plotmath has no line break, so a string that contains BOTH a
+# newline and markup cannot be rendered; those fall back to the raw text.
+MARKUP_RE   <- "(_|\\^)\\{[^}]*\\}"
+MARKUP_HINT <- "Sub/superscript: A_{550}, 10^{-7} (not with multi-line text)"
+
+# TRUE for each element that carries at least one _{...} / ^{...} segment.
+markup_has <- function(s) {
+  if (is.null(s) || length(s) == 0) return(logical(0))
+  s   <- as.character(s)
+  out <- grepl(MARKUP_RE, s)
+  out[is.na(s)] <- FALSE
+  out
+}
+
+# Quote a literal run as a plotmath string atom (escapes \ and " for parse()).
+markup_quote <- function(txt) encodeString(txt, quote = "\"")
+
+# Convert one string to a PLOTMATH SOURCE STRING (not an expression).
+#   "A_{550}"     -> "\"A\"[\"550\"]"
+#   "10^{-7} PFU" -> "\"10\"^\"-7\"*\" PFU\""
+#   "^{2}H"       -> "\"\"^\"2\"*\"H\""     (leading markup gets an empty base)
+#   "abc"         -> "\"abc\""              (plain text -> one quoted literal)
+# Returns NA_character_ when the string mixes a newline with markup.
+markup_to_plotmath <- function(s) {
+  if (is.null(s) || length(s) != 1) return(NA_character_)
+  s <- as.character(s)
+  if (is.na(s)) return(NA_character_)
+  m <- gregexpr(MARKUP_RE, s)[[1]]
+  if (m[1] == -1L) return(markup_quote(s))          # no markup: single literal
+  if (grepl("\n", s, fixed = TRUE)) return(NA_character_)
+  starts <- as.integer(m)
+  lens   <- attr(m, "match.length")
+  atoms  <- character(0)
+  pos    <- 1L
+  for (k in seq_along(starts)) {
+    st <- starts[k]; ln <- lens[k]
+    if (st > pos) atoms <- c(atoms, markup_quote(substr(s, pos, st - 1L)))
+    seg   <- substr(s, st, st + ln - 1L)
+    op    <- substr(seg, 1L, 1L)
+    inner <- substr(seg, 3L, nchar(seg) - 1L)
+    if (length(atoms) == 0L) atoms <- "\"\""        # nothing to attach to yet
+    j <- length(atoms)
+    atoms[j] <- if (identical(op, "_"))
+      paste0(atoms[j], "[", markup_quote(inner), "]")
+    else
+      paste0(atoms[j], "^", markup_quote(inner))
+    pos <- st + ln
+  }
+  if (pos <= nchar(s)) atoms <- c(atoms, markup_quote(substr(s, pos, nchar(s))))
+  paste(atoms, collapse = "*")
+}
+
+# The label actually handed to ggplot: the untouched string when there is no
+# markup, otherwise a plotmath call.  Malformed input silently degrades to the
+# raw string — this must never throw.
+markup_label <- function(s) {
+  if (is.null(s) || length(s) != 1) return(s)
+  if (is.na(s) || !markup_has(s)) return(s)
+  pm <- markup_to_plotmath(s)
+  if (is.na(pm)) return(s)
+  tryCatch(parse(text = pm)[[1]], error = function(e) s)
+}
+
 # Legend placement modes. "auto_inside" drops the legend into the emptiest
 # corner (see pick_legend_corner); "direct" replaces the legend box with
 # coloured labels at the end of each line.  Shared by the sidebar control and
@@ -455,6 +525,13 @@ html_escape <- function(x) {
   gsub(">", "&gt;",  x, fixed = TRUE)
 }
 
+# Renders the _{...} / ^{...} plot-text markup as real HTML sub/superscripts.
+# Runs on an ALREADY-ESCAPED string (the braces survive html_escape untouched).
+markup_to_html <- function(x) {
+  x <- gsub("_\\{([^}]*)\\}",   "<sub>\\1</sub>", x)
+  gsub("\\^\\{([^}]*)\\}", "<sup>\\1</sup>", x)
+}
+
 html_table <- function(df, digits = 5, class = NULL) {
   if (is.null(df) || nrow(df) == 0) return("<p><em>No data.</em></p>")
   df <- as.data.frame(df, stringsAsFactors = FALSE)  # tibbles: df[i, j] must be scalar
@@ -531,7 +608,7 @@ build_html_report <- function(meta, img_b64, stats_df, metrics_df) {
   footer { margin-top: 40px; color: #adb5bd; font-size: 0.8em; border-top: 1px solid #dee2e6; padding-top: 8px; }
   @media print { body { max-width: none; } h2 { page-break-after: avoid; } .tblwrap { overflow-x: visible; } }
 </style></head><body>
-<h1>", html_escape(meta$title), "</h1>
+<h1>", markup_to_html(html_escape(meta$title)), "</h1>
 <div class='meta'>",
   if (nzchar(meta$author %||% "")) paste0(html_escape(meta$author), " &middot; ") else "",
   "Generated ", html_escape(meta$generated), "</div>",
@@ -1648,6 +1725,7 @@ ui <- fluidPage(
                        textInput("y_axis_label",  "Y-axis Label:",  "A550"),
                        textInput("plot_title",    "Plot Title:",    ""),
                        textInput("plot_subtitle", "Plot Subtitle:", ""),
+                       p(style = "font-size:.8em;color:#888;margin:-6px 0 10px 0;", MARKUP_HINT),
                        h5("Gridlines", style = "margin-top:12px;"),
                        checkboxInput("show_major_gridlines", "Show Major Gridlines", FALSE),
                        checkboxInput("show_minor_gridlines", "Show Minor Gridlines", FALSE),
@@ -1862,6 +1940,7 @@ ui <- fluidPage(
                          column(2, actionButton("samples_deselect_all", "None",
                                                 style = "margin-top:25px;width:100%;font-size:.8em;background:#dc3545;color:white;border:none;"))
                        ),
+                       p(style = "font-size:.8em;color:#888;margin:0 0 8px 0;", MARKUP_HINT),
                        uiOutput("var_settings")
                    )
                  )
@@ -4356,7 +4435,10 @@ server <- function(input, output, session) {
       ll      <- input[[paste0("legend_label_", vid)]]
       base_ll <- if (!is.null(ll) && nchar(ll) > 0) ll else vn
       wrap_w  <- if (!is.null(input$legend_wrap_width)) input$legend_wrap_width else 20L
-      leg_labels[i] <- stringr::str_wrap(base_ll, width = wrap_w)
+      # Labels carrying _{}/^{} markup skip the wrap: str_wrap inserts newlines
+      # and plotmath cannot render a line break.
+      leg_labels[i] <- if (markup_has(base_ll)) base_ll
+                       else stringr::str_wrap(base_ll, width = wrap_w)
       
       fi <- input[[paste0("shape_filled_", vid)]]
       filled_map[i] <- if (!is.null(fi)) fi else TRUE
@@ -4370,7 +4452,16 @@ server <- function(input, output, session) {
     shapes     <- aes_vals$shapes;     colors     <- aes_vals$colors
     line_types <- aes_vals$line_types; leg_labels <- aes_vals$leg_labels
     filled_map <- aes_vals$filled_map; n_vars     <- length(samples)
-    
+
+    # Legend text handed to the scales.  Untouched (a plain named character
+    # vector) unless at least one label uses _{}/^{} markup, in which case it
+    # becomes a named list mixing plotmath calls and plain strings — ggplot's
+    # legend guide accepts that and renders each element accordingly.
+    leg_labels_disp <- if (any(markup_has(leg_labels)))
+      setNames(lapply(leg_labels, markup_label), names(leg_labels))
+    else leg_labels
+
+
     display_colors <- colors
     if (!is.null(highlight_samples))
       for (i in seq_len(n_vars))
@@ -4424,7 +4515,13 @@ server <- function(input, output, session) {
                        top    = if (input$y_scale_type == "log") 10^(log10(yr[2]) - diff(log10(yr)) * 0.08) else yr[1] + diff(yr) * 0.92,
                        bottom = if (input$y_scale_type == "log") 10^(log10(yr[1]) + diff(log10(yr)) * 0.08) else yr[1] + diff(yr) * 0.08,
                        middle = if (input$y_scale_type == "log") 10^(mean(log10(yr))) else mean(yr))
-          p <- p + annotate("text", x = tp + lhj, y = yp, label = lbl, size = lsz, color = lc)
+          # _{}/^{} markup -> plotmath; plain text keeps the literal path.
+          lbl_pm <- if (any(markup_has(lbl))) markup_to_plotmath(lbl) else NA_character_
+          p <- if (!is.na(lbl_pm))
+            p + annotate("text", x = tp + lhj, y = yp, label = lbl_pm, parse = TRUE,
+                         size = lsz, color = lc)
+          else
+            p + annotate("text", x = tp + lhj, y = yp, label = lbl, size = lsz, color = lc)
         }
       }
     }
@@ -4576,10 +4673,10 @@ server <- function(input, output, session) {
           stroke      = input$point_stroke,
           inherit.aes = FALSE
         ) +
-          scale_shape_manual(values = shape_map, labels = leg_labels,
+          scale_shape_manual(values = shape_map, labels = leg_labels_disp,
                              name = NULL, guide = "none") +
           scale_fill_manual(values = setNames(display_colors, samples),
-                            labels = leg_labels, guide = "none")
+                            labels = leg_labels_disp, guide = "none")
       } else {
         pt_data          <- plot_data
         pt_data$pt_fill  <- fill_map[pt_data$variable]
@@ -4592,13 +4689,13 @@ server <- function(input, output, session) {
           stroke      = input$point_stroke,
           inherit.aes = FALSE
         ) +
-          scale_shape_manual(values = shape_map, labels = leg_labels,
+          scale_shape_manual(values = shape_map, labels = leg_labels_disp,
                              name = NULL, guide = "none") +
           scale_fill_identity()
       }
     } else if (using_shadow) {
       p <- p + scale_fill_manual(values = setNames(display_colors, samples),
-                                 labels = leg_labels, guide = "none")
+                                 labels = leg_labels_disp, guide = "none")
     }
     
     if (use_end_labels) {
@@ -4614,21 +4711,33 @@ server <- function(input, output, session) {
       ep_lab <- unname(leg_labels[as.character(ep$variable)])
       miss   <- is.na(ep_lab) | !nzchar(ep_lab)
       ep_lab[miss] <- as.character(ep$variable)[miss]
+      # A geom_text layer is either all-plotmath or all-literal, so as soon as
+      # ONE displayed label uses markup every label is converted (plain ones
+      # become quoted literals) and the layer switches to parse = TRUE.  With
+      # no markup anywhere the layer is exactly what it always was.
+      ep_parse <- FALSE
+      if (any(markup_has(ep_lab))) {
+        pm <- vapply(ep_lab, function(z)
+          markup_to_plotmath(gsub("\n", " ", z, fixed = TRUE)),
+          character(1), USE.NAMES = FALSE)
+        if (!anyNA(pm)) { ep_lab <- pm; ep_parse <- TRUE }
+      }
       ep$end_label <- ep_lab
       p   <- p + geom_text_repel(data = ep,
                                  aes(label = end_label, color = variable, x = Inf, y = mean_value),
                                  direction = "y", xlim = c(mt + off, Inf),
                                  min.segment.length = Inf, hjust = 0,
                                  size = lbl_size / 2.835,
+                                 parse = ep_parse,
                                  fontface = if (isTRUE(input$label_bold)) "bold" else "plain")
     }
     
     p <- p +
-      scale_color_manual(   values = setNames(display_colors, samples), labels = leg_labels, name = NULL) +
-      scale_linetype_manual(values = line_types,                         labels = leg_labels, name = NULL)
+      scale_color_manual(   values = setNames(display_colors, samples), labels = leg_labels_disp, name = NULL) +
+      scale_linetype_manual(values = line_types,                         labels = leg_labels_disp, name = NULL)
     
     if (!isTRUE(input$show_points))
-      p <- p + scale_shape_manual(values = shapes, labels = leg_labels, name = NULL)
+      p <- p + scale_shape_manual(values = shapes, labels = leg_labels_disp, name = NULL)
     
     p <- p +
       guides(shape = guide_legend(override.aes = list(alpha = 1)),
@@ -4835,18 +4944,25 @@ server <- function(input, output, session) {
                           linewidth  = input$threshold_linewidth)
       lbl <- trimws(input$threshold_label)
       if (nchar(lbl) > 0) {
-        x_rng <- range(plot_data$time, na.rm = TRUE)
-        p <- p + annotate("text", x = x_rng[2], y = input$threshold_value,
-                          label = lbl, hjust = 1.05, vjust = -0.4,
-                          color = thr_col, size = 3.5)
+        x_rng  <- range(plot_data$time, na.rm = TRUE)
+        lbl_pm <- if (any(markup_has(lbl))) markup_to_plotmath(lbl) else NA_character_
+        p <- if (!is.na(lbl_pm))
+          p + annotate("text", x = x_rng[2], y = input$threshold_value,
+                       label = lbl_pm, parse = TRUE, hjust = 1.05, vjust = -0.4,
+                       color = thr_col, size = 3.5)
+        else
+          p + annotate("text", x = x_rng[2], y = input$threshold_value,
+                       label = lbl, hjust = 1.05, vjust = -0.4,
+                       color = thr_col, size = 3.5)
       }
     }
 
     p + coord_cartesian(clip = "off") +
-      labs(x        = input$x_axis_label,
-           y        = input$y_axis_label,
-           title    = input$plot_title,
-           subtitle = if (nchar(trimws(input$plot_subtitle)) > 0) input$plot_subtitle else NULL,
+      # markup_label() is the identity for text without _{}/^{} markup.
+      labs(x        = markup_label(input$x_axis_label),
+           y        = markup_label(input$y_axis_label),
+           title    = markup_label(input$plot_title),
+           subtitle = if (nchar(trimws(input$plot_subtitle)) > 0) markup_label(input$plot_subtitle) else NULL,
            caption  = if (nchar(notes_cap) > 0) notes_cap else NULL)
   }
   
@@ -4975,11 +5091,38 @@ server <- function(input, output, session) {
     tagList(modalButton("Cancel"),
             actionButton(apply_id, "Apply", class = "btn-primary"))
 
+  # ── Sub/superscript helpers for the click-to-edit modals ────────────────────
+  # Two buttons that append "_{}" / "^{}" to one text field, plus the hint.
+  # `tag` names the button pair, `target` is the input the observers write to.
+  ce_markup_row <- function(tag)
+    tagList(
+      div(style = "margin:-8px 0 6px 0;",
+          actionButton(paste0("ce_ins_sub_", tag), "+ sub _{ }",
+                       style = "font-size:.78em;padding:2px 8px;margin-right:6px;"),
+          actionButton(paste0("ce_ins_sup_", tag), "+ sup ^{ }",
+                       style = "font-size:.78em;padding:2px 8px;")),
+      p(style = "font-size:.8em;color:#888;margin:0 0 10px 0;", MARKUP_HINT))
+
+  ce_bind_markup <- function(tag, target) {
+    append_to <- function(what)
+      updateTextInput(session, target,
+                      value = paste0(input[[target]] %||% "", what))
+    observeEvent(input[[paste0("ce_ins_sub_", tag)]], append_to("_{}"),
+                 ignoreInit = TRUE)
+    observeEvent(input[[paste0("ce_ins_sup_", tag)]], append_to("^{}"),
+                 ignoreInit = TRUE)
+  }
+  ce_bind_markup("title", "ce_title")
+  ce_bind_markup("axis",  "ce_axis_label")
+  ce_bind_markup("leg",   "ce_leg_label")
+  ce_bind_markup("gen",   "ce_g_title")
+
   ce_title_editor <- function() {
     showModal(modalDialog(
       title = "Edit plot title", size = "m", easyClose = TRUE,
       textInput("ce_title",    "Plot title:", value = input$plot_title    %||% ""),
       textInput("ce_subtitle", "Subtitle:",   value = input$plot_subtitle %||% ""),
+      ce_markup_row("title"),
       numericInput("ce_title_size", "Title font size (pt):",
                    value = input$title_font_size %||% 20, min = 6, max = 60, step = 1),
       selectInput("ce_title_font", "Font family:", choices = FONT_FAMILY_CHOICES,
@@ -5006,6 +5149,7 @@ server <- function(input, output, session) {
       size = "m", easyClose = TRUE,
       textInput("ce_axis_label", if (is_x) "X-axis label:" else "Y-axis label:",
                 value = (if (is_x) input$x_axis_label else input$y_axis_label) %||% ""),
+      ce_markup_row("axis"),
       fluidRow(
         column(6, numericInput("ce_axis_size", "Axis label font size (pt):",
                                value = input$axis_label_font_size %||% 20,
@@ -5063,6 +5207,7 @@ server <- function(input, output, session) {
       title = "Edit legend entry", size = "m", easyClose = TRUE,
       selectInput("ce_leg_sample", "Sample:", choices = samps, selected = vn),
       textInput("ce_leg_label", "Legend label:", value = st$label),
+      ce_markup_row("leg"),
       fluidRow(
         column(6, selectInput("ce_leg_color_preset", "Color:",
                               choices = CE_COLOR_CHOICES, selected = st$preset)),
@@ -5144,6 +5289,7 @@ server <- function(input, output, session) {
         column(6, textInput("ce_g_xlab", "X-axis label:", value = input$x_axis_label %||% "")),
         column(6, textInput("ce_g_ylab", "Y-axis label:", value = input$y_axis_label %||% ""))
       ),
+      ce_markup_row("gen"),
       fluidRow(
         column(4, numericInput("ce_g_title_size", "Title (pt):",
                                value = input$title_font_size %||% 20, min = 6, max = 60)),
@@ -6896,7 +7042,7 @@ server <- function(input, output, session) {
     line_colors <- if (!is.null(samps)) resolve_aesthetics(samps)$colors else NULL
     p <- ggplot(dd, aes(x = time, y = dODdt, color = variable)) +
       geom_line(linewidth = 0.8) +
-      labs(x = input$x_axis_label, y = "dOD/dt (rate of change)",
+      labs(x = markup_label(input$x_axis_label), y = "dOD/dt (rate of change)",
            title = "Derivative Plot: Rate of OD Change", color = NULL) +
       theme_pubr() +
       theme(text = element_text(family = input$font_family),
@@ -6942,7 +7088,7 @@ server <- function(input, output, session) {
     pd$variable <- factor(pd$variable, levels = input$selected_samples)
     p <- ggplot(pd, aes(x = time, y = mean_value, color = variable)) +
       geom_line(linewidth = 0.9) +
-      labs(x = input$x_axis_label, y = input$y_axis_label,
+      labs(x = markup_label(input$x_axis_label), y = markup_label(input$y_axis_label),
            title = "Annotated Growth Curves", color = NULL) +
       scale_color_manual(values = aes_v$colors) +
       theme_pubr() +
@@ -7097,7 +7243,7 @@ server <- function(input, output, session) {
     ggplot(pd, aes(x = time, y = variable, fill = mean_value)) +
       geom_tile() +
       scale_fill_viridis_c(option = pal, name = "OD") +
-      labs(x = input$x_axis_label, y = NULL, title = "OD Over Time Heatmap") +
+      labs(x = markup_label(input$x_axis_label), y = NULL, title = "OD Over Time Heatmap") +
       theme_minimal() +
       theme(text = element_text(family = input$font_family),
             plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
