@@ -19,7 +19,20 @@ time filtering, styling — what you see is what exports.
 
 Export width/height are in **inches at print scale** with a separate DPI —
 so "3.5 in wide, 600 dpi TIFF" is exactly what a journal's figure pipeline
-expects. Legend width is compensated so the *panel* keeps the stated size.
+expects.
+
+**Exact panel mode** (default, Graph Panel Size section): you specify the
+*panel* dimensions (px on screen, inches for export) and the canvas is
+**measured** to fit the axis labels and the actual legend — any number of
+samples, any label length, the panel never changes. PPTX slides and GIF
+frames of the cumulative builds all share the final frame's canvas and
+legend width, so the full-sized graph box is present from slide/frame 1 and
+nothing shifts as lines and legend entries appear (in this mode the GIF's
+output size follows the measured canvas, not the GIF width/height inputs).
+
+**SVG is editor-friendly**: exports use svglite with no forced text widths —
+real `<text>` elements with real font names, so in Inkscape/Illustrator you
+select text as text, and resizing or re-fonting it never stretches glyphs.
 
 ### Publication presets
 

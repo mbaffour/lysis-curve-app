@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-08-20 — figure-craft wave
+
+### Draggable floating legend labels (`7f3eae3`)
+- New legend mode "Floating labels (drag to place)": each sample name is an
+  individually draggable element on the plot; positions are drawn into the
+  ggplot (panel-npc annotations via a new `annotation_npc()` geom, since
+  `annotation_custom()` collapses on log10 axes), so all exports match the
+  placement. Positions persist in settings and project themes. Panel-rect
+  measurement accurate to 0.01 px; drag guarded against click-to-edit.
+- SVG exports switched to svglite with `fix_text_size = FALSE`: real
+  editable `<text>` elements, no `textLength` stretching in Inkscape.
+- Settings-loader hardening for partial/hand-edited files.
+
+### Exact graph-panel size + presentation parity (this commit)
+- "Exact graph-panel size" mode (default): the user sets the panel itself
+  (px on screen, inches for export); the canvas is measured — not
+  estimated — to fit axis decorations and the actual legend. A 3-sample
+  and a 30-sample legend produce exactly identical panels. Tall legends
+  gain pad rows rather than clipping. "Reserved right space" is obsolete
+  in this mode.
+- PPTX/GIF cumulative builds: every slide/frame shares the final frame's
+  canvas and legend-cell width, so the full-sized graph box is present
+  from frame 1 and the panel never shifts as lines/legend entries appear.
+  (PPTX additionally fits the canvas to the slide box, scaling uniformly.)
+- Publication presets set the export panel dimensions too.
+
 ## 2026-08-19 — merge with killcurveplot + major feature wave
 
 The app became the single merged base for the kill-curve tooling

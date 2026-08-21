@@ -74,6 +74,25 @@ Legend → Position offers:
 
 Long labels wrap at a width you control, so the panel size stays constant.
 
+### Floating labels (drag to place)
+
+Legend → Position → **"Floating labels (drag to place)"** turns every sample
+name into an individually draggable element on the plot. Grab a name, drop
+it wherever nothing is covered. Positions are drawn **into the figure**, so
+every export (PNG/TIFF/PDF/SVG/PPTX/GIF/reports) shows the labels exactly
+where you placed them. A **Reset positions** button restores the defaults,
+and positions are saved with your settings and project themes.
+
+### Exact graph-panel size
+
+Export tab → **Graph Panel Size**: with "Exact graph-panel size" on (the
+default), you set the graph box itself — width × height in px on screen and
+in inches for exports — and that is honored *exactly*. Axis labels and the
+legend get whatever extra canvas they need: a 3-sample legend and a
+30-sample legend produce **identical panels**; only the canvas differs.
+This is what makes multi-figure layouts line up perfectly. Turning it off
+restores the legacy behavior (canvas size fixed, panel a fraction of it).
+
 ## 5. Error display and replicates
 
 Error type: SD, SEM, or 95% CI (t-based), with a multiplier; displayed as

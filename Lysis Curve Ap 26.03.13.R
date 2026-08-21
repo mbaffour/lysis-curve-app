@@ -225,6 +225,231 @@ pick_legend_corner <- function(plot_data, y_log = FALSE) {
   as_result(order_pref[which.min(counts)])
 }
 
+# ── Fixed-panel geometry ──────────────────────────────────────────────────────
+# The graph BOX (the ggplot panel) is what a reader compares between figures,
+# so the panel is the thing held constant — never the canvas.  Two modes:
+#
+#   exact_panel = TRUE   The panel is pinned to a size the USER types
+#                        (panel_w_px / panel_h_px on screen, export_panel_*_in
+#                        for files) and the canvas is MEASURED afterwards, so it
+#                        grows or shrinks to hold whatever axis labels and
+#                        legend happen to be present.  A 3-sample and a
+#                        30-sample legend then produce IDENTICAL panels.
+#   exact_panel = FALSE  Legacy behaviour: the panel is a fixed FRACTION of the
+#                        canvas (68% x 78%) and the canvas is what the user
+#                        sets; the legend width is estimated and reserved.
+#
+# Unit conversions: 1 px = 0.75 pt at 96 dpi; 1 in = 72 pt.
+# Defined at top level (outside the server) so the whole geometry layer is
+# unit-testable without a Shiny session.
+fix_panel_size <- function(p, base_w_px, base_h_px,
+                           panel_w_pt = NULL, panel_h_pt = NULL) {
+  if (is.null(panel_w_pt)) panel_w_pt <- base_w_px * 0.75 * 0.68
+  if (is.null(panel_h_pt)) panel_h_pt <- base_h_px * 0.75 * 0.78
+  panel_w_pt <- max(panel_w_pt, 60)
+  panel_h_pt <- max(panel_h_pt, 50)
+  g   <- if (inherits(p, "gtable")) p else ggplotGrob(p)
+  pos <- g$layout[g$layout$name == "panel", , drop = FALSE]
+  g$widths[pos$l]  <- grid::unit(panel_w_pt, "pt")
+  g$heights[pos$t] <- grid::unit(panel_h_pt, "pt")
+  g
+}
+
+# Total size of a gtable whose panel cell has already been pinned to an
+# absolute unit by fix_panel_size().  Every remaining cell (axes, titles,
+# legend, margins) is absolute too, and the leftover "null" cells convert to 0,
+# so the sum is exactly the canvas the figure needs.  A throw-away 30 x 30 in
+# pdf device supplies the font metrics; the previously current device (the
+# Shiny png device, say) is restored on exit.
+measure_canvas_in <- function(g) {
+  cur <- grDevices::dev.cur()
+  grDevices::pdf(NULL, width = 30, height = 30)
+  on.exit({
+    grDevices::dev.off()
+    if (cur > 1) try(grDevices::dev.set(cur), silent = TRUE)
+  }, add = TRUE)
+  list(w_in = grid::convertWidth( sum(g$widths),  "in", valueOnly = TRUE),
+       h_in = grid::convertHeight(sum(g$heights), "in", valueOnly = TRUE))
+}
+
+# Row/column of the panel cell, and the layout column holding the right-hand
+# legend.  ggplot2 4.x names the guide cells guide-box-{right,left,top,bottom,
+# inside}; older builds emit a single "guide-box".  Either way the right legend
+# is the guide cell sitting in a column to the RIGHT of the panel.
+gtable_panel_pos <- function(g) {
+  pos <- g$layout[g$layout$name == "panel", , drop = FALSE]
+  if (nrow(pos) < 1) NULL else pos[1, ]
+}
+
+gtable_legend_col <- function(g) {
+  pos <- gtable_panel_pos(g)
+  if (is.null(pos)) return(NULL)
+  lay <- g$layout
+  hit <- lay[lay$name == "guide-box-right" & lay$l > pos$l, , drop = FALSE]
+  if (nrow(hit) < 1)
+    hit <- lay[grepl("guide-box", lay$name, fixed = TRUE) & lay$l > pos$l, , drop = FALSE]
+  if (nrow(hit) < 1) return(NULL)
+  as.integer(hit$l[which.min(hit$l)])
+}
+
+# A right-hand legend lives in the PANEL's gtable row, so once the panel row is
+# pinned to an exact height a legend with many entries would be taller than its
+# cell and get clipped by the device edge.  This adds a pad row immediately
+# above and below the panel and lets the legend span all three, so the CANVAS
+# grows (measure_canvas_in picks the pad rows up) while the panel keeps exactly
+# the height the user asked for.  No-op when the legend already fits, when there
+# is no right legend, or when the guide cell is not a plain single-row cell.
+legend_row_index <- function(g) {
+  pos <- gtable_panel_pos(g)
+  if (is.null(pos)) return(NULL)
+  li <- which(g$layout$name == "guide-box-right" & g$layout$l > pos$l)
+  if (length(li) != 1L) return(NULL)
+  if (g$layout$t[li] != pos$t || g$layout$b[li] != pos$t) return(NULL)
+  li
+}
+
+# How many pt of pad (per side) this gtable's right legend needs. 0 = it fits.
+legend_pad_pt <- function(g) {
+  li <- legend_row_index(g)
+  if (is.null(li)) return(0)
+  pos <- gtable_panel_pos(g)
+  tryCatch({
+    cur <- grDevices::dev.cur()
+    grDevices::pdf(NULL, width = 30, height = 30)
+    on.exit({
+      grDevices::dev.off()
+      if (cur > 1) try(grDevices::dev.set(cur), silent = TRUE)
+    }, add = TRUE)
+    need <- grid::convertHeight(grid::grobHeight(g$grobs[[li]]), "pt", valueOnly = TRUE)
+    have <- grid::convertHeight(g$heights[pos$t],                "pt", valueOnly = TRUE)
+    if (!is.finite(need) || !is.finite(have) || need <= have + 0.01) 0
+    else (need - have) / 2
+  }, error = function(e) 0)
+}
+
+add_legend_pad <- function(g, pad) {
+  if (!is.finite(pad) || pad <= 0) return(g)
+  if (!requireNamespace("gtable", quietly = TRUE)) return(g)
+  if (is.null(legend_row_index(g))) return(g)
+  pt <- gtable_panel_pos(g)$t
+  g  <- gtable::gtable_add_rows(g, grid::unit(pad, "pt"), pos = pt - 1L)  # above
+  g  <- gtable::gtable_add_rows(g, grid::unit(pad, "pt"), pos = pt + 1L)  # below
+  li <- which(g$layout$name == "guide-box-right")
+  li <- li[g$layout$t[li] == pt + 1L]
+  if (length(li) == 1L) {
+    g$layout$t[li] <- pt
+    g$layout$b[li] <- pt + 2L
+  }
+  g
+}
+
+expand_for_tall_legend <- function(g) add_legend_pad(g, legend_pad_pt(g))
+
+# Inches from the left edge of the canvas to the left edge of the panel.
+gtable_panel_left_in <- function(g) {
+  pos <- gtable_panel_pos(g)
+  if (is.null(pos)) return(NA_real_)
+  cur <- grDevices::dev.cur()
+  grDevices::pdf(NULL, width = 30, height = 30)
+  on.exit({
+    grDevices::dev.off()
+    if (cur > 1) try(grDevices::dev.set(cur), silent = TRUE)
+  }, add = TRUE)
+  if (pos$l > 1)
+    grid::convertWidth(sum(g$widths[seq_len(pos$l - 1)]), "in", valueOnly = TRUE)
+  else 0
+}
+
+# ── Cumulative-build parity (PPTX slides / GIF frames) ────────────────────────
+# A cumulative build must "start with the full-sized graph box and incrementally
+# add the lines": every frame therefore needs the same canvas AND the same panel
+# position, not just the same panel size.  Two things are made constant:
+#   1. the panel cell   — pinned to panel_w_pt x panel_h_pt in every frame;
+#   2. the legend cell  — every earlier frame's right-legend column is widened
+#                         to the FINAL frame's legend width, so a legend that
+#                         grows by one row per frame never pushes the canvas.
+# The measured canvas of each frame is then compared with the final frame's; if
+# anything else still differs (an axis label that only appears once all samples
+# are shown, say) the frame inherits the final frame's complete width/height
+# vectors as a safety net, which makes the geometry identical by construction.
+# `plots` is ordered frame 1 .. n with n = the final, all-samples frame.
+#
+# fit_w_in / fit_h_in (optional): a hard box the finished canvas must fit into —
+# a PowerPoint slide, for instance, whose size officer cannot change here.  grid
+# units are absolute, so a canvas larger than the placeholder is CLIPPED, not
+# scaled; the only correct response is to shrink the panel until the measured
+# canvas fits.  The panel is still identical on every slide, just smaller than
+# the inches typed in the sidebar — reported back as panel_w_pt / panel_h_pt.
+build_parity_frames <- function(plots, panel_w_pt, panel_h_pt, tol_in = 0.005,
+                                fit_w_in = NULL, fit_h_in = NULL, max_iter = 4L) {
+  res <- parity_frames_once(plots, panel_w_pt, panel_h_pt, tol_in)
+  res$panel_w_pt <- panel_w_pt; res$panel_h_pt <- panel_h_pt; res$fitted <- FALSE
+  if (is.null(fit_w_in) || is.null(fit_h_in)) return(res)
+  it <- 0L
+  while (it < max_iter &&
+         (res$w_in > fit_w_in + 1e-6 || res$h_in > fit_h_in + 1e-6)) {
+    s <- min(fit_w_in / res$w_in, fit_h_in / res$h_in)
+    s <- max(min(s, 0.999), 0.05)
+    panel_w_pt <- panel_w_pt * s
+    panel_h_pt <- panel_h_pt * s
+    res <- parity_frames_once(plots, panel_w_pt, panel_h_pt, tol_in)
+    res$panel_w_pt <- panel_w_pt; res$panel_h_pt <- panel_h_pt; res$fitted <- TRUE
+    it <- it + 1L
+  }
+  res
+}
+
+parity_frames_once <- function(plots, panel_w_pt, panel_h_pt, tol_in = 0.005) {
+  n  <- length(plots)
+  gs <- lapply(plots, function(p)
+    fix_panel_size(p, NULL, NULL, panel_w_pt = panel_w_pt, panel_h_pt = panel_h_pt))
+  # The FINAL frame has the tallest legend, so its pad is the one every frame
+  # gets — applying each frame's own pad would change the row count per frame.
+  pad <- legend_pad_pt(gs[[n]])
+  if (pad > 0) gs <- lapply(gs, add_legend_pad, pad = pad)
+  gf    <- gs[[n]]
+  lcol  <- gtable_legend_col(gf)
+  leg_w <- if (!is.null(lcol)) gf$widths[lcol] else NULL
+  fin   <- measure_canvas_in(gf)
+  fallback <- FALSE
+  if (n > 1L) for (k in seq_len(n - 1L)) {
+    gk <- gs[[k]]
+    lk <- gtable_legend_col(gk)
+    if (!is.null(lk) && !is.null(leg_w)) gk$widths[lk] <- leg_w
+    mk <- measure_canvas_in(gk)
+    if (abs(mk$w_in - fin$w_in) > tol_in || abs(mk$h_in - fin$h_in) > tol_in) {
+      if (length(gk$widths)  == length(gf$widths) &&
+          length(gk$heights) == length(gf$heights)) {
+        gk$widths  <- gf$widths
+        gk$heights <- gf$heights
+        fallback   <- TRUE
+      }
+    }
+    gs[[k]] <- gk
+  }
+  fin_padded <- pad_canvas(fin)
+  list(grobs = gs, w_in = fin_padded$w_in, h_in = fin_padded$h_in,
+       measured_w_in = fin$w_in, measured_h_in = fin$h_in,
+       legend_col = lcol, legend_w = leg_w, fallback = fallback)
+}
+
+# Render resolution for GIF frames.  The canvas is measured in inches, so the
+# frame pixel size is canvas x GIF_DPI — identical for every frame by
+# construction.  96 keeps 1 px on screen == 1 px in the GIF.
+GIF_DPI <- 96
+
+# Text cell widths come from grobWidth, which is resolved against whatever
+# device is open — and the throw-away pdf device used by measure_canvas_in()
+# reports font metrics a hair different from the png / cairo_pdf device the
+# figure is finally drawn on (about 2 px at 96 dpi in practice).  grid CENTRES
+# the gtable in the device, so an under-measured canvas would shave a pixel or
+# two off both edges.  This constant pad absorbs that; it is identical for every
+# figure and every frame, so nothing about panel or frame parity changes.
+CANVAS_PAD_IN <- 0.09
+
+pad_canvas <- function(m) list(w_in = m$w_in + CANVAS_PAD_IN,
+                               h_in = m$h_in + CANVAS_PAD_IN)
+
 # ── Publication presets ───────────────────────────────────────────────────────
 # Journal print rules: single column = 89 mm = 3.5 in, 1.5 column = 140 mm =
 # 5.51 in, double column = 183 mm = 7.2 in; sans-serif faces; final printed text
@@ -240,6 +465,7 @@ pub_preset_settings <- function(name) {
   switch(name,
     single = list(
       export_width = 3.5, export_height = 2.8, export_dpi = 600,
+      export_panel_w_in = 2.4, export_panel_h_in = 2.2,
       export_format = "tiff", font_family = "sans",
       title_font_size = 10, axis_label_font_size = 9, axis_text_font_size = 8,
       legend_font_size = 8,
@@ -247,6 +473,7 @@ pub_preset_settings <- function(name) {
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     onehalf = list(
       export_width = 5.51, export_height = 4.1, export_dpi = 600,
+      export_panel_w_in = 3.7, export_panel_h_in = 3.2,
       export_format = "tiff", font_family = "sans",
       title_font_size = 11, axis_label_font_size = 10, axis_text_font_size = 9,
       legend_font_size = 9,
@@ -254,6 +481,7 @@ pub_preset_settings <- function(name) {
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     double = list(
       export_width = 7.2, export_height = 5.0, export_dpi = 600,
+      export_panel_w_in = 4.9, export_panel_h_in = 3.9,
       export_format = "tiff", font_family = "sans",
       title_font_size = 12, axis_label_font_size = 10, axis_text_font_size = 9,
       legend_font_size = 9,
@@ -261,6 +489,7 @@ pub_preset_settings <- function(name) {
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     pdfvec = list(
       export_width = 7, export_height = 5, export_dpi = 300,
+      export_panel_w_in = 4.8, export_panel_h_in = 3.9,
       export_format = "pdf", font_family = "sans",
       title_font_size = 14, axis_label_font_size = 12, axis_text_font_size = 11,
       legend_font_size = 11,
@@ -268,6 +497,7 @@ pub_preset_settings <- function(name) {
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     slide = list(
       export_width = 10, export_height = 7.5, export_dpi = 300,
+      export_panel_w_in = 6.8, export_panel_h_in = 5.9,
       export_format = "png", font_family = "sans",
       title_font_size = 22, axis_label_font_size = 20, axis_text_font_size = 18,
       legend_font_size = 18,
@@ -2152,9 +2382,11 @@ ui <- fluidPage(
                        fluidRow(style = "margin-top:4px;",
                          column(12, checkboxInput("legend_no_box", "No legend background/border", FALSE))
                        ),
-                       # Reserved space control — shown when legend won't occupy external space
+                       # Reserved space control — shown when legend won't occupy external
+                       # space AND exact-panel mode is off (with an exactly-sized panel the
+                       # canvas is measured, so nothing has to be reserved by hand).
                        conditionalPanel(
-                         condition = "input.legend_position == 'none' || input.legend_position == 'inside' || input.legend_position == 'auto_inside' || input.legend_position == 'direct' || input.legend_position == 'floating' || input.show_end_labels == true",
+                         condition = "input.exact_panel != true && (input.legend_position == 'none' || input.legend_position == 'inside' || input.legend_position == 'auto_inside' || input.legend_position == 'direct' || input.legend_position == 'floating' || input.show_end_labels == true)",
                          fluidRow(style = "margin-top:6px;",
                            column(12, numericInput("legend_reserve_space",
                                                    "Reserved right space (pt):", 130, 0, 400, 10)),
@@ -2353,7 +2585,35 @@ ui <- fluidPage(
                  tags$details(
                    tags$summary("Plot Dimensions & Export"),
                    div(class = "panel-section",
+                       h4("Graph Panel Size", class = "panel-title"),
+                       checkboxInput("exact_panel",
+                                     "Exact graph-panel size (canvas adapts to legend)", TRUE),
+                       p(style = "font-size:.82em;color:#555;margin-top:-4px;",
+                         "The graph box is exactly this size; axis labels and the legend get ",
+                         "whatever extra canvas they need — a 3-sample and a 30-sample legend ",
+                         "produce identical panels."),
+                       conditionalPanel(
+                         condition = "input.exact_panel == true",
+                         fluidRow(
+                           column(6, numericInput("panel_w_px", "Panel width (px):",  560, 200, 2000)),
+                           column(6, numericInput("panel_h_px", "Panel height (px):", 470, 150, 1500))
+                         ),
+                         fluidRow(
+                           column(6, numericInput("export_panel_w_in", "Export panel width (in):",  6.8, 1, 20, 0.1)),
+                           column(6, numericInput("export_panel_h_in", "Export panel height (in):", 6.2, 1, 16, 0.1))
+                         ),
+                         p(style = "font-size:.80em;color:#888;margin-top:0;",
+                           "Screen size drives the preview; export size drives downloaded images, ",
+                           "PowerPoint slides and GIF frames.")
+                       ),
                        h4("Canvas Size", class = "panel-title"),
+                       conditionalPanel(
+                         condition = "input.exact_panel == true",
+                         p(style = "font-size:.80em;color:#888;margin-top:0;",
+                           "Exact graph-panel size is ON, so the canvas below is only a fallback ",
+                           "used if the panel cannot be measured. Turn the checkbox off to size ",
+                           "the canvas directly (legacy behaviour).")
+                       ),
                        fluidRow(
                          column(6, numericInput("plot_width",  "Width (px):",  820, 400, 2000)),
                          column(6, numericInput("plot_height", "Height (px):", 600, 300, 1500))
@@ -2371,6 +2631,15 @@ ui <- fluidPage(
                          column(6, numericInput("export_width",  "Width (in):",  10, 2, 30)),
                          column(6, numericInput("export_height", "Height (in):", 8,  2, 20))
                        ),
+                       conditionalPanel(
+                         condition = "input.exact_panel == true",
+                         p(style = "font-size:.80em;color:#888;margin-top:-6px;",
+                           "Exact graph-panel size is ON: the downloaded canvas is measured from ",
+                           "the export panel size above, so these inches no longer size the image. ",
+                           "PowerPoint slides are a fixed 10 x 7.5 in — if the measured canvas is ",
+                           "bigger, the panel is scaled down by the same factor on every slide so ",
+                           "the build stays consistent.")
+                       ),
                        numericInput("export_dpi", "DPI:", 300, 72, 1200),
                        downloadButton("downloadPlot", "Download Image"),
                        hr(),
@@ -2385,6 +2654,13 @@ ui <- fluidPage(
                        numericInput("gif_fps",    "Frames per second:", 1,   0.2, 10,   0.2),
                        numericInput("gif_width",  "GIF Width (px):",    800, 300, 2000, 50),
                        numericInput("gif_height", "GIF Height (px):",   600, 200, 1500, 50),
+                       conditionalPanel(
+                         condition = "input.exact_panel == true",
+                         p(style = "font-size:.80em;color:#888;margin-top:-6px;",
+                           "Exact graph-panel size is ON: every frame is rendered at the measured ",
+                           "canvas (export panel size x 96 dpi), so all frames share identical ",
+                           "pixel dimensions and the graph box is full-size from frame 1.")
+                       ),
                        gif_ui
                    )
                  ),
@@ -4243,6 +4519,9 @@ server <- function(input, output, session) {
       export_format         = "pdf",      export_width           = 10,
       export_height         = 8,          export_dpi             = 300,
       plot_width            = 820,        plot_height            = 600,
+      exact_panel           = TRUE,
+      panel_w_px            = 560,        panel_h_px             = 470,
+      export_panel_w_in     = 6.8,        export_panel_h_in      = 6.2,
       gif_fps               = 1,          gif_width              = 800,
       gif_height            = 600,        x_extra_ticks          = "",
       report_title          = "Lysis Curve Analysis Report",
@@ -5220,8 +5499,16 @@ server <- function(input, output, session) {
 
     # Reserve a fixed right margin when the legend isn't consuming space externally,
     # so the panel stays the same size whether legend is visible or not.
-    eff_leg <- if (use_end_labels) "none" else lp_mode
-    if (eff_leg %in% c("none", "inside", "auto_inside", "floating")) {
+    #
+    # Exact-panel mode does not need the reservation for that purpose — the panel
+    # is pinned outright and the canvas is measured afterwards — with ONE
+    # exception: end-of-line / direct labels are drawn INSIDE the panel with
+    # clip = "off", so they spill into the margin and the gtable never sees them.
+    # That case still needs real reserved space or the names get cut off.
+    eff_leg    <- if (use_end_labels) "none" else lp_mode
+    exact_mode <- !isFALSE(input$exact_panel)
+    if (eff_leg %in% c("none", "inside", "auto_inside", "floating") &&
+        (!exact_mode || use_end_labels)) {
       rsv <- if (!is.null(input$legend_reserve_space)) input$legend_reserve_space else 130
       p <- p + theme(plot.margin = margin(5, rsv, 5, 5, "pt"))
     }
@@ -5367,20 +5654,33 @@ server <- function(input, output, session) {
   }), millis = 400)
   
   # ── Fixed-panel helpers ───────────────────────────────────────────────────────
-  # Forces the ggplot panel to constant pt dimensions so the curve-drawing area
-  # never changes regardless of legend width or display choices.
-  # px → pt conversion at 96 DPI: 1 px = 0.75 pt.
-  # Panel occupies 68% of figure width and 78% of figure height (axes/margins
-  # take the rest on a typical pubr/prism theme).
-  fix_panel_size <- function(p, base_w_px, base_h_px) {
-    panel_w_pt <- max(base_w_px * 0.75 * 0.68, 60)
-    panel_h_pt <- max(base_h_px * 0.75 * 0.78, 50)
-    g   <- ggplotGrob(p)
-    pos <- g$layout[g$layout$name == "panel", , drop = FALSE]
-    g$widths[pos$l]  <- unit(panel_w_pt, "pt")
-    g$heights[pos$t] <- unit(panel_h_pt, "pt")
-    g
-  }
+  # fix_panel_size(), measure_canvas_in(), gtable_legend_col() and
+  # build_parity_frames() live at TOP LEVEL (see "Fixed-panel geometry" near the
+  # top of this file) so they are unit-testable without a Shiny session; the
+  # server sees them through lexical scoping.  Everything below turns them into
+  # reactives that read the user's inputs.
+
+  # Exact-panel mode is the default; treat a not-yet-created input as ON so the
+  # very first render already uses the measured canvas.
+  exact_panel_on <- reactive({ !isFALSE(input$exact_panel) })
+
+  # Screen panel size the user asked for, in px.
+  panel_px <- reactive({
+    w <- suppressWarnings(as.numeric(input$panel_w_px %||% 560))
+    h <- suppressWarnings(as.numeric(input$panel_h_px %||% 470))
+    if (!is.finite(w)) w <- 560
+    if (!is.finite(h)) h <- 470
+    c(w = max(w, 200), h = max(h, 150))
+  })
+
+  # Export panel size the user asked for, in inches.
+  export_panel_in <- reactive({
+    w <- suppressWarnings(as.numeric(input$export_panel_w_in %||% 6.8))
+    h <- suppressWarnings(as.numeric(input$export_panel_h_in %||% 6.2))
+    if (!is.finite(w)) w <- 6.8
+    if (!is.finite(h)) h <- 6.2
+    c(w = max(w, 1), h = max(h, 1))
+  })
 
   # Estimates how many extra pixels the legend will add to the right of the
   # panel when legend.position == "right".  Accounts for the wrapped labels
@@ -5407,18 +5707,61 @@ server <- function(input, output, session) {
     as.integer(ceiling(3 * em_px + max_chars * 0.65 * em_px + 40))
   })
 
+  # ── The screen grob and its measured size ────────────────────────────────────
+  # ONE source of truth for the image the browser shows.  renderPlot's own
+  # width/height functions, the plotOutput container and click_frac() all read
+  # plot_dims(), so the <img>, the graphics device and the floating-label
+  # overlay can never disagree — which is what keeps the overlay maths exact.
+  current_grob <- reactive({
+    p <- generate_plot()
+    if (exact_panel_on()) {
+      pp <- panel_px()
+      tryCatch(expand_for_tall_legend(
+                 fix_panel_size(p, NULL, NULL,
+                                panel_w_pt = pp[["w"]] * 0.75,
+                                panel_h_pt = pp[["h"]] * 0.75)),
+               error = function(e) ggplotGrob(p))
+    } else {
+      tryCatch(fix_panel_size(p,
+                              base_w_px = if (!is.null(input$plot_width))  input$plot_width  else 820,
+                              base_h_px = if (!is.null(input$plot_height)) input$plot_height else 600),
+               error = function(e) ggplotGrob(p))
+    }
+  })
+
+  plot_dims <- reactive({
+    canvas_h <- if (!is.null(input$plot_height)) input$plot_height else 600
+    canvas_w <- if (!is.null(input$plot_width))  input$plot_width  else 820
+    # Legacy: user-set canvas plus the estimated legend reservation.  Called
+    # exactly as before (legend_extra_px()'s req() still propagates) so
+    # non-exact mode behaves byte-for-byte as it did.
+    if (!exact_panel_on())
+      return(list(w = canvas_w + legend_extra_px(), h = canvas_h))
+    pp <- panel_px()
+    m  <- tryCatch(pad_canvas(measure_canvas_in(current_grob())),
+                   error = function(e) NULL)
+    if (is.null(m) || !all(is.finite(c(m$w_in, m$h_in))))
+      return(list(w = canvas_w + tryCatch(legend_extra_px(), error = function(e) 0L),
+                  h = canvas_h))
+    # Round UP so the device is never a fraction of a pixel smaller than the
+    # gtable; floor at panel + 40 px so a degenerate measurement can never
+    # produce an image smaller than the graph box itself.
+    list(w = max(ceiling(m$w_in * 96), pp[["w"]] + 40),
+         h = max(ceiling(m$h_in * 96), pp[["h"]] + 40))
+  })
+
   output$plot_container <- renderUI({
     # Container expands rightward to fit the legend; panel size stays constant.
     # The relative wrapper anchors #float_overlay, the drag surface for the
     # "floating" legend mode. The overlay itself is click-through
     # (pointer-events:none); only the labels inside it take pointer events, so
     # plot_click keeps working everywhere else.
-    extra_px <- legend_extra_px()
+    d <- plot_dims()
     div(id    = "od_plot_wrap",
         style = "position:relative;display:inline-block;",
         plotOutput("od_plot",
-                   height = paste0(input$plot_height, "px"),
-                   width  = paste0(input$plot_width + extra_px, "px"),
+                   height = paste0(d$h, "px"),
+                   width  = paste0(d$w, "px"),
                    click  = "plot_click"),
         div(id    = "float_overlay",
             style = paste0("position:absolute;left:0;top:0;",
@@ -5546,8 +5889,8 @@ server <- function(input, output, session) {
       if (!is.null(icr)) { rx <- icr$x %||% 1; ry <- icr$y %||% 1 }
     }
     if (is.null(px) || is.null(py)) return(NULL)
-    w <- (input$plot_width  %||% 820) + legend_extra_px()
-    h <- (input$plot_height %||% 600)
+    d <- plot_dims()          # same numbers the <img> and the device use
+    w <- d$w; h <- d$h
     if (!is.finite(w) || w <= 0 || !is.finite(h) || h <= 0) return(NULL)
     list(x = as.numeric(px) / rx / w, y = as.numeric(py) / ry / h)
   }
@@ -5800,13 +6143,7 @@ server <- function(input, output, session) {
   
   output$od_plot <- renderPlot({
     plot_inputs_debounced()
-    p <- generate_plot()
-    g <- tryCatch(
-      fix_panel_size(p,
-                     base_w_px = if (!is.null(input$plot_width))  input$plot_width  else 820,
-                     base_h_px = if (!is.null(input$plot_height)) input$plot_height else 600),
-      error = function(e) ggplotGrob(p)
-    )
+    g <- current_grob()
     # Measure the panel BEFORE drawing: grid.draw can leave the viewport stack
     # somewhere other than the root, and relative units would then resolve
     # against the wrong viewport.
@@ -5816,7 +6153,12 @@ server <- function(input, output, session) {
     # device the size of the image the client actually shows. Shiny's default
     # replays the recorded plot at the new size WITHOUT re-running this block,
     # which would leave the overlay positioned for the previous width.
-  }, res = 96, execOnResize = TRUE)
+  },
+  # Explicit device size == the container size (both come from plot_dims()), so
+  # the <img> is never rescaled and float_send_bounds' centring offset is ~0.
+  width  = function() plot_dims()$w,
+  height = function() plot_dims()$h,
+  res = 96, execOnResize = TRUE)
   
   output$downloadPlot <- downloadHandler(
     filename = function()
@@ -5827,13 +6169,30 @@ server <- function(input, output, session) {
       h_in <- input$export_height
       dpi  <- input$export_dpi
       fmt  <- input$export_format
-      # Extra inches for the legend (use screen px estimate → convert to inches)
-      extra_in <- legend_extra_px() / 96
-      g <- tryCatch(
-        fix_panel_size(p, base_w_px = w_in * 96, base_h_px = h_in * 96),
-        error = function(e) ggplotGrob(p)
-      )
-      total_w_in <- w_in + extra_in
+      if (exact_panel_on()) {
+        # Panel pinned to the inches the user typed (1 in = 72 pt), canvas
+        # MEASURED — no legend-width estimate anywhere in this path.
+        ep <- export_panel_in()
+        g  <- tryCatch(
+          expand_for_tall_legend(
+            fix_panel_size(p, NULL, NULL,
+                           panel_w_pt = ep[["w"]] * 72,
+                           panel_h_pt = ep[["h"]] * 72)),
+          error = function(e) ggplotGrob(p))
+        m <- tryCatch(pad_canvas(measure_canvas_in(g)), error = function(e) NULL)
+        if (is.null(m) || !all(is.finite(c(m$w_in, m$h_in))))
+          m <- list(w_in = ep[["w"]] + 1.5, h_in = ep[["h"]] + 1.2)
+        total_w_in <- m$w_in
+        h_in       <- m$h_in
+      } else {
+        # Extra inches for the legend (use screen px estimate → convert to inches)
+        extra_in <- legend_extra_px() / 96
+        g <- tryCatch(
+          fix_panel_size(p, base_w_px = w_in * 96, base_h_px = h_in * 96),
+          error = function(e) ggplotGrob(p)
+        )
+        total_w_in <- w_in + extra_in
+      }
       switch(fmt,
         # cairo_pdf embeds system fonts (Microsoft Sans Serif, Segoe UI, ...)
         # that the base pdf() device cannot map
@@ -5857,6 +6216,40 @@ server <- function(input, output, session) {
     }
   )
   
+  # ── Cumulative-build frames for PPTX / GIF ───────────────────────────────────
+  # USER REQUIREMENT: a build "starts with the full-sized graph box and
+  # incrementally adds the lines".  One list of gtables with a constant panel
+  # AND a constant canvas, shared by both presentation exports.  In exact-panel
+  # mode the panel is the user's export panel size; otherwise it falls back to
+  # the legacy fraction of the export canvas — either way build_parity_frames()
+  # guarantees identical geometry across every frame.
+  presentation_frames <- function(samps, canvas_w_in, canvas_h_in,
+                                  fit_w_in = NULL, fit_h_in = NULL) {
+    aes_v  <- resolve_aesthetics(samps)
+    pd_all <- prepare_plot_data(samples = samps)
+    plots  <- lapply(seq_along(samps), function(k) {
+      vs <- samps[seq_len(k)]
+      aes_k <- list(
+        shapes     = aes_v$shapes[    vs],
+        colors     = aes_v$colors[    vs],
+        line_types = aes_v$line_types[vs],
+        leg_labels = aes_v$leg_labels[vs],
+        filled_map = aes_v$filled_map[vs]
+      )
+      build_plot(pd_all[pd_all$variable %in% vs, , drop = FALSE], vs, aes_k,
+                 highlight_samples = NULL)
+    })
+    if (exact_panel_on()) {
+      ep <- export_panel_in()
+      pw <- ep[["w"]] * 72
+      ph <- ep[["h"]] * 72
+    } else {
+      pw <- canvas_w_in * 96 * 0.75 * 0.68
+      ph <- canvas_h_in * 96 * 0.75 * 0.78
+    }
+    build_parity_frames(plots, pw, ph, fit_w_in = fit_w_in, fit_h_in = fit_h_in)
+  }
+
   # ── PowerPoint Export ────────────────────────────────────────────────────────
   if (has_officer && has_rvg) {
     output$downloadPPTX <- downloadHandler(
@@ -5866,52 +6259,60 @@ server <- function(input, output, session) {
         library(officer); library(rvg)
         req(rv$data, input$selected_samples)
         samps  <- input$selected_samples
-        aes_v  <- resolve_aesthetics(samps)
-        pd_all <- prepare_plot_data(samples = samps)
         sw     <- max(input$export_width,  4)
         sh     <- max(input$export_height, 3)
-        
+
         title_h  <- 0.5
         plot_top <- title_h
-        plot_h   <- sh - title_h
-        
+
         title_pt <- max(12, round(sw * 2.2))
-        
+
         prs <- read_pptx()
-        
+        # officer offers no slide-size setter here, so the real slide is the box
+        # the canvas has to fit: grid units are absolute and an oversized canvas
+        # would be clipped, not scaled.
+        ss  <- tryCatch(slide_size(prs), error = function(e) list(width = 10, height = 7.5))
+
+        # Every slide uses the FINAL frame's canvas and the final frame's panel
+        # geometry, so the graph box is already full-size on slide 1 and never
+        # moves as lines are added.
+        fr      <- presentation_frames(samps, sw, sh - title_h,
+                                       fit_w_in = ss$width,
+                                       fit_h_in = ss$height - title_h)
+        slide_w <- fr$w_in
+        slide_h <- fr$h_in
+        left_x  <- max(0, (ss$width - slide_w) / 2)
+
         for (k in seq_along(samps)) {
-          visible_samps <- samps[1:k]
-          new_samp      <- samps[k]
-          
-          aes_k <- list(
-            shapes     = aes_v$shapes[    visible_samps],
-            colors     = aes_v$colors[    visible_samps],
-            line_types = aes_v$line_types[visible_samps],
-            leg_labels = aes_v$leg_labels[visible_samps],
-            filled_map = aes_v$filled_map[visible_samps]
-          )
-          
-          pd_k <- pd_all[pd_all$variable %in% visible_samps, , drop = FALSE]
-          
-          p_k <- build_plot(pd_k, visible_samps, aes_k, highlight_samples = NULL)
-          
+          new_samp <- samps[k]
+
           prs <- add_slide(prs, layout = "Blank", master = "Office Theme")
-          
+
           prs <- ph_with(prs,
                          value    = new_samp,
-                         location = ph_location(left = 0, top = 0, width = sw, height = title_h))
-          
-          prs <- ph_with(prs,
-                         dml(ggobj = p_k, bg = "white"),
-                         location = ph_location(left = 0, top = plot_top,
-                                                width = sw, height = plot_h))
+                         location = ph_location(left = left_x, top = 0,
+                                                width = slide_w, height = title_h))
+
+          # local() forces the grob NOW: dml() captures `code` as a quosure and
+          # a bare loop variable would resolve to the last frame at print time.
+          prs <- local({
+            g_k <- fr$grobs[[k]]
+            ph_with(prs,
+                    dml(code = grid::grid.draw(g_k), bg = "white"),
+                    location = ph_location(left = left_x, top = plot_top,
+                                           width = slide_w, height = slide_h))
+          })
         }
-        
-        p_final <- build_plot(pd_all, samps, aes_v, highlight_samples = NULL)
+
         prs <- add_slide(prs, layout = "Blank", master = "Office Theme")
-        prs <- ph_with(prs,
-                       dml(ggobj = p_final, bg = "white"),
-                       location = ph_location(left = 0, top = 0, width = sw, height = sh))
+        prs <- local({
+          g_f <- fr$grobs[[length(fr$grobs)]]
+          ph_with(prs,
+                  dml(code = grid::grid.draw(g_f), bg = "white"),
+                  location = ph_location(left = left_x,
+                                         top  = max(0, (ss$height - slide_h) / 2),
+                                         width = slide_w, height = slide_h))
+        })
 
         # Optional experiment notes slide
         if (isTRUE(input$notes_pptx_slide)) {
@@ -5954,10 +6355,10 @@ server <- function(input, output, session) {
           prs <- add_slide(prs, layout = "Blank", master = "Office Theme")
           prs <- ph_with(prs,
                          value    = "Experiment Notes",
-                         location = ph_location(left = 0.3, top = 0.2, width = sw - 0.6, height = 0.5))
+                         location = ph_location(left = 0.3, top = 0.2, width = ss$width - 0.6, height = 0.5))
           prs <- ph_with(prs,
                          value    = body_text,
-                         location = ph_location(left = 0.3, top = 0.8, width = sw - 0.6, height = sh - 1.0))
+                         location = ph_location(left = 0.3, top = 0.8, width = ss$width - 0.6, height = ss$height - 1.0))
         }
 
         print(prs, target = file)
@@ -5974,39 +6375,31 @@ server <- function(input, output, session) {
         library(gifski)
         req(rv$data, input$selected_samples)
         samps  <- input$selected_samples
-        aes_v  <- resolve_aesthetics(samps)
-        pd_all <- prepare_plot_data(samples = samps)
         w_px   <- max(as.integer(input$gif_width),  200L)
         h_px   <- max(as.integer(input$gif_height), 150L)
         fps    <- max(input$gif_fps, 0.2)
-        
+
+        # Constant panel AND constant canvas in every frame (see
+        # presentation_frames / build_parity_frames).  The frame pixel size is
+        # the measured canvas at the GIF render resolution, so all frames are
+        # byte-identical in dimension and the graph box never moves.
+        fr <- presentation_frames(samps, w_px / 96, h_px / 96)
+        gw <- max(as.integer(round(fr$w_in * GIF_DPI)), 50L)
+        gh <- max(as.integer(round(fr$h_in * GIF_DPI)), 50L)
+
         tmp_dir <- tempfile(); dir.create(tmp_dir)
         on.exit(unlink(tmp_dir, recursive = TRUE), add = TRUE)
-        
-        frame_files <- character(length(samps))
-        for (k in seq_along(samps)) {
-          visible_samps <- samps[1:k]
-          
-          aes_k <- list(
-            shapes     = aes_v$shapes[    visible_samps],
-            colors     = aes_v$colors[    visible_samps],
-            line_types = aes_v$line_types[visible_samps],
-            leg_labels = aes_v$leg_labels[visible_samps],
-            filled_map = aes_v$filled_map[visible_samps]
-          )
-          
-          pd_k <- pd_all[pd_all$variable %in% visible_samps, , drop = FALSE]
-          
-          p_k   <- build_plot(pd_k, visible_samps, aes_k, highlight_samples = NULL)
+
+        frame_files <- character(length(fr$grobs))
+        for (k in seq_along(fr$grobs)) {
           fpath <- file.path(tmp_dir, sprintf("frame_%03d.png", k))
-          ggsave(fpath, plot = p_k, device = "png",
-                 width = w_px / 96, height = h_px / 96,
-                 units = "in", dpi = 96)
+          grDevices::png(fpath, width = gw, height = gh, res = GIF_DPI, units = "px")
+          tryCatch(grid::grid.draw(fr$grobs[[k]]), finally = grDevices::dev.off())
           frame_files[k] <- fpath
         }
-        
+
         gifski(frame_files, gif_file = file,
-               width = w_px, height = h_px,
+               width = gw, height = gh,
                delay = 1 / fps, loop = TRUE)
       }
     )
