@@ -433,17 +433,49 @@ markup_label <- function(s) {
 
 # Legend placement modes. "auto_inside" drops the legend into the emptiest
 # corner (see pick_legend_corner); "direct" replaces the legend box with
-# coloured labels at the end of each line.  Shared by the sidebar control and
-# the click-to-edit legend modal.
+# coloured labels at the end of each line; "floating" draws every sample name
+# as its own text grob inside the panel, positioned by dragging it in the
+# browser (see float_positions / the floatPanelBounds handler).  Shared by the
+# sidebar control and the click-to-edit legend modal.
 LEGEND_POSITION_CHOICES <- c("Right"  = "right", "Left" = "left",
                              "Top"    = "top",   "Bottom" = "bottom",
                              "Inside (custom)"                     = "inside",
                              "Inside — auto (least crowded corner)" = "auto_inside",
                              "Direct labels at line ends"          = "direct",
+                             "Floating labels (drag to place)"     = "floating",
                              "None"   = "none")
 
 CE_TEXT_FACE_CHOICES <- c("Plain" = "plain", "Bold" = "bold",
                           "Italic" = "italic", "Bold Italic" = "bold.italic")
+
+# ── Panel-relative grob annotation (used by the "floating" legend mode) ───────
+# annotation_custom() cannot be used here: it carries xmin/xmax/ymin/ymax of
+# -Inf/Inf, and on this app's log10 y-axis the scale transform turns log10(-Inf)
+# into NaN, which collapses the annotation viewport to zero height — every label
+# then lands on the same point at the top of the panel.
+# This geom hands the grob to grid untouched, so its npc units are measured
+# directly against the panel viewport: (0,0) bottom-left, (1,1) top-right,
+# independent of the scales, limits, transforms and expansion in force.
+GeomNpcGrob <- ggplot2::ggproto(
+  "GeomNpcGrob", ggplot2::Geom,
+  extra_params  = c("na.rm", "npc_grob"),
+  handle_na     = function(data, params) data,
+  draw_panel    = function(data, panel_params, coord, npc_grob) npc_grob,
+  draw_key      = ggplot2::draw_key_blank,
+  default_aes   = ggplot2::aes(),
+  required_aes  = character(0)
+)
+
+# Adds `grob` to the panel at its own npc coordinates.
+annotation_npc <- function(grob)
+  ggplot2::layer(data        = data.frame(x = NA_real_),
+                 mapping     = NULL,
+                 stat        = ggplot2::StatIdentity,
+                 position    = ggplot2::PositionIdentity,
+                 geom        = GeomNpcGrob,
+                 inherit.aes = FALSE,
+                 show.legend = FALSE,
+                 params      = list(npc_grob = grob))
 
 # ── Analysis report helpers ───────────────────────────────────────────────────
 # Plain-language definitions of every column produced by
@@ -1617,7 +1649,120 @@ ui <- fluidPage(
        function csConvertLast(mode, ev) {
          if (ev) ev.preventDefault();
          if (window.__csLastText) csConvert(window.__csLastText, mode);
-       }"
+       }
+
+       // ── Floating legend labels: drag-to-place ───────────────────────────
+       // The server sends the PANEL rectangle in image pixels plus one entry
+       // per displayed sample (name, label, colour, npc position, font size).
+       // Each entry becomes an absolutely-positioned div over the plot image.
+       // Dropping a div reports its panel fraction back through 'float_drop';
+       // the server stores it and redraws the ggplot with the label baked in,
+       // so exports match what is on screen.  The dashed hover outline is
+       // DOM-only and never reaches an export.
+       // The last payload is cached: the overlay div is re-created whenever
+       // plot_container re-renders, and the custom message may be processed
+       // before that DOM swap lands, so the shiny:value listener below repaints
+       // from the cache once the new node exists.
+       window.__floatMsg = null;
+       function floatRender() {
+         var msg = window.__floatMsg;
+         var ov  = document.getElementById('float_overlay');
+         if (!ov) return;
+         if (!msg || !msg.active) {
+           ov.style.display = 'none'; ov.innerHTML = ''; return;
+         }
+         ov.style.display = 'block';
+         ov.innerHTML = '';
+         var L = +msg.left, T = +msg.top, W = +msg.w, H = +msg.h;
+         var fam  = msg.family || 'inherit';
+         var list = msg.samples || [];
+         if (!Array.isArray(list)) list = [list];
+         list.forEach(function(s) {
+           var d = document.createElement('div');
+           d.className = 'float-label';
+           d.setAttribute('data-name', s.name);
+           d.textContent = s.label || s.name;
+           d.style.position   = 'absolute';
+           d.style.left       = (L + (+s.fx) * W) + 'px';
+           d.style.top        = (T + (1 - (+s.fy)) * H) + 'px';
+           d.style.transform  = 'translate(-50%, -50%)';
+           d.style.color      = s.color;
+           d.style.fontSize   = ((+s.fontsize) * 1.333) + 'px';
+           d.style.fontFamily = fam;
+           d.style.lineHeight = '1.15';
+           d.style.textAlign  = 'center';
+           d.style.whiteSpace = 'pre';
+           d.style.cursor     = 'grab';
+           d.style.padding    = '1px 3px';
+           d.style.outline    = '1px dashed transparent';
+           d.style.userSelect = 'none';
+           d.style.touchAction   = 'none';
+           d.style.pointerEvents = 'auto';
+           d.addEventListener('mouseenter', function() {
+             d.style.outline = '1px dashed rgba(120,120,120,.85)';
+           });
+           d.addEventListener('mouseleave', function() {
+             if (!d.__drag) d.style.outline = '1px dashed transparent';
+           });
+           // Swallow clicks so plot_click (click-to-edit / click-to-place)
+           // never fires from a label.
+           d.addEventListener('click', function(e) {
+             e.stopPropagation(); e.preventDefault();
+           });
+           d.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+           d.addEventListener('pointerdown', function(e) {
+             e.stopPropagation(); e.preventDefault();
+             d.__drag = true;
+             try { d.setPointerCapture(e.pointerId); } catch (err) {}
+             d.style.cursor  = 'grabbing';
+             d.style.outline = '1px dashed rgba(120,120,120,.85)';
+             var r = d.getBoundingClientRect();
+             d.__ox = e.clientX - (r.left + r.width  / 2);
+             d.__oy = e.clientY - (r.top  + r.height / 2);
+           });
+           d.addEventListener('pointermove', function(e) {
+             if (!d.__drag) return;
+             e.stopPropagation();
+             var pr = ov.getBoundingClientRect();
+             d.style.left = (e.clientX - d.__ox - pr.left) + 'px';
+             d.style.top  = (e.clientY - d.__oy - pr.top)  + 'px';
+           });
+           var floatEnd = function(e) {
+             if (!d.__drag) return;
+             d.__drag = false;
+             e.stopPropagation();
+             try { d.releasePointerCapture(e.pointerId); } catch (err) {}
+             d.style.cursor  = 'grab';
+             d.style.outline = '1px dashed transparent';
+             var pr = ov.getBoundingClientRect();
+             var r  = d.getBoundingClientRect();
+             var cx = r.left + r.width  / 2 - pr.left;
+             var cy = r.top  + r.height / 2 - pr.top;
+             var fx = W > 0 ?     (cx - L) / W : 0;
+             var fy = H > 0 ? 1 - (cy - T) / H : 0;
+             fx = Math.max(0, Math.min(1, fx));
+             fy = Math.max(0, Math.min(1, fy));
+             Shiny.setInputValue('float_drop',
+               {name: s.name, fx: fx, fy: fy, nonce: Date.now()});
+           };
+           d.addEventListener('pointerup',     floatEnd);
+           d.addEventListener('pointercancel', floatEnd);
+           ov.appendChild(d);
+         });
+       }
+       Shiny.addCustomMessageHandler('floatPanelBounds', function(msg) {
+         window.__floatMsg = msg;
+         floatRender();
+         setTimeout(floatRender, 0);
+       });
+       // Repaint after the plot image / container is swapped in. Shiny fires
+       // shiny:value through jQuery, so it must be bound with jQuery — a native
+       // document listener never sees it, and the overlay div is replaced every
+       // time plot_container re-renders.
+       $(document).on('shiny:value', function(e) {
+         if (e.name === 'od_plot' || e.name === 'plot_container')
+           setTimeout(floatRender, 0);
+       });"
     )),
     uiOutput("night_mode_css"),
     tags$style(HTML("
@@ -1993,12 +2138,23 @@ ui <- fluidPage(
                              "When checked: click anywhere on the plot to move the legend there.")
                          )
                        ),
+                       # Floating (drag-to-place) labels
+                       conditionalPanel(
+                         condition = "input.legend_position == 'floating'",
+                         div(style = "margin-top:6px;",
+                           p(style = "font-size:.82em;color:#555;margin-bottom:4px;",
+                             "Drag each name on the plot. Positions are part of the figure ",
+                             "and appear in every export."),
+                           actionButton("float_reset", "Reset positions",
+                                        style = "font-size:11px;padding:3px 10px;")
+                         )
+                       ),
                        fluidRow(style = "margin-top:4px;",
                          column(12, checkboxInput("legend_no_box", "No legend background/border", FALSE))
                        ),
                        # Reserved space control — shown when legend won't occupy external space
                        conditionalPanel(
-                         condition = "input.legend_position == 'none' || input.legend_position == 'inside' || input.legend_position == 'auto_inside' || input.legend_position == 'direct' || input.show_end_labels == true",
+                         condition = "input.legend_position == 'none' || input.legend_position == 'inside' || input.legend_position == 'auto_inside' || input.legend_position == 'direct' || input.legend_position == 'floating' || input.show_end_labels == true",
                          fluidRow(style = "margin-top:6px;",
                            column(12, numericInput("legend_reserve_space",
                                                    "Reserved right space (pt):", 130, 0, 400, 10)),
@@ -3284,9 +3440,58 @@ server <- function(input, output, session) {
     settings_status   = NULL,
     style_page        = 1L,
     data_original     = NULL,   # snapshot of uploaded data for Revert
-    entry_parsed      = NULL    # data.frame from textarea Option B parse
+    entry_parsed      = NULL,   # data.frame from textarea Option B parse
+    float_pos         = list()  # legend_position == "floating": sample name ->
+                                # c(fx, fy) panel fractions, (0,0) = bottom-left
   )
-  
+
+  # ── Floating legend labels ───────────────────────────────────────────────────
+  # Positions are panel fractions in [0, 1] with the origin at the panel's
+  # bottom-left, i.e. exactly the npc units annotation_custom() draws in — so
+  # they are scale-agnostic (log axes need no special casing) and identical on
+  # screen and in every export.
+  FLOAT_CLAMP <- function(v) min(0.97, max(0.03, v))
+  # First activation (and any sample never dragged): a staggered column down
+  # the right-hand side of the panel, so nothing starts stacked on top.
+  float_default_pos <- function(samples) {
+    if (is.null(samples) || length(samples) == 0) return(list())
+    setNames(lapply(seq_along(samples),
+                    function(i) c(0.82, FLOAT_CLAMP(0.92 - 0.10 * (i - 1)))),
+             samples)
+  }
+  # Resolved positions for `samples`: stored drops win, the rest get defaults.
+  float_positions <- function(samples) {
+    out <- float_default_pos(samples)
+    st  <- rv$float_pos
+    if (is.null(st) || length(st) == 0) return(out)
+    for (vn in samples) {
+      v <- suppressWarnings(as.numeric(unlist(st[[vn]])))
+      if (length(v) >= 2 && all(is.finite(v[1:2])))
+        out[[vn]] <- c(min(1, max(0, v[1])), min(1, max(0, v[2])))
+    }
+    out
+  }
+  # Shared by the settings-load and theme-apply paths: coerce a JSON block of
+  # {sample name: [fx, fy]} into the rv$float_pos shape, dropping junk.
+  float_pos_import <- function(fl) {
+    out <- list()
+    if (is.null(fl) || length(fl) == 0 || is.null(names(fl))) return(out)
+    for (nm in names(fl)) {
+      v <- suppressWarnings(as.numeric(unlist(fl[[nm]])))
+      if (length(v) >= 2 && all(is.finite(v[1:2])))
+        out[[nm]] <- c(min(1, max(0, v[1])), min(1, max(0, v[2])))
+    }
+    out
+  }
+  # Stored (dragged) positions only, optionally restricted to `samps`.
+  float_pos_export <- function(samps = NULL) {
+    st <- rv$float_pos
+    if (is.null(st) || length(st) == 0) return(structure(list(), names = character(0)))
+    if (!is.null(samps)) st <- st[intersect(names(st), samps)]
+    st
+  }
+
+
   # ── Palette helpers ──────────────────────────────────────────────────────────
   get_palette_colors <- function(pal, n) {
     switch(pal,
@@ -3610,6 +3815,8 @@ server <- function(input, output, session) {
         saved_at           = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
         global_settings    = global_settings,
         sample_aesthetics  = sample_aesthetics,
+        # Drag-placed floating legend labels: sample name -> [fx, fy]
+        floating_labels    = float_pos_export(),
         experiment_notes   = get_notes()
       )
       write_json(out, file, pretty = TRUE, auto_unbox = TRUE)
@@ -3671,11 +3878,19 @@ server <- function(input, output, session) {
     
     apply_imported_sample_aesthetics()
 
+    # Restore drag-placed floating legend labels
+    if (!is.null(s$floating_labels))
+      rv$float_pos <- float_pos_import(s$floating_labels)
+
     # Restore experiment notes if present in the settings file
     if (!is.null(s$experiment_notes)) {
       en <- s$experiment_notes
       restore_text <- function(id, val) {
-        if (!is.null(val) && nchar(trimws(val)) > 0)
+        # A field absent from a hand-edited/partial settings file arrives as
+        # NULL or list(); a bare nchar(NULL) is length-0 and would error out
+        # of the observer, silently killing the session's reactivity.
+        val <- tryCatch(as.character(val), error = function(e) character(0))
+        if (length(val) == 1 && !is.na(val) && nchar(trimws(val)) > 0)
           updateTextInput(session, id, value = trimws(val))
       }
       restore_text("notes_exp_id",       en$exp_id)
@@ -3855,6 +4070,18 @@ server <- function(input, output, session) {
     }, error = function(e) NULL)
   }
 
+  # Reads a theme's floating_labels block (same keying by sample name as
+  # sample_aesthetics); NULL when the theme predates the feature.
+  read_theme_float <- function(key) {
+    f <- theme_path(key)
+    if (!nzchar(theme_key(key)) || !file.exists(f)) return(NULL)
+    tryCatch({
+      s  <- fromJSON(f, simplifyVector = FALSE)
+      fl <- s$floating_labels
+      if (is.null(fl) || length(fl) == 0) NULL else fl
+    }, error = function(e) NULL)
+  }
+
   # Populate the dropdown from disk at startup.
   refresh_theme_choices()
 
@@ -3875,7 +4102,8 @@ server <- function(input, output, session) {
       themes_dir_ensure()
       write_json(list(version           = "1.0",
                       saved_at          = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-                      sample_aesthetics = aes_map),
+                      sample_aesthetics = aes_map,
+                      floating_labels   = float_pos_export(samps)),
                  theme_path(nm), pretty = TRUE, auto_unbox = TRUE)
       TRUE
     }, error = function(e) {
@@ -3904,6 +4132,16 @@ server <- function(input, output, session) {
     samps <- isolate(input$selected_samples)
     if (is.null(samps) || length(samps) == 0) samps <- rv$od_vars
     k <- apply_sample_aes(aes_map, samps)
+    # Floating label positions travel with the theme, keyed by sample name.
+    fl <- read_theme_float(key)
+    if (!is.null(fl)) {
+      imp <- float_pos_import(fl)
+      if (length(imp) > 0) {
+        cur <- rv$float_pos
+        for (nm in names(imp)) cur[[nm]] <- imp[[nm]]
+        rv$float_pos <- cur
+      }
+    }
     showNotification(sprintf("Theme '%s': styles applied to %d of %d samples.",
                              key, k, length(samps %||% character(0))),
                      type = "message")
@@ -4569,6 +4807,9 @@ server <- function(input, output, session) {
     # The show_end_labels checkbox stays additive for every other mode.
     lp_mode        <- if (!is.null(input$legend_position)) input$legend_position else "right"
     direct_labels  <- identical(lp_mode, "direct")
+    #   "floating"    -> no legend box; each name is a draggable text grob
+    #                    drawn into the panel (see the block before coord_cartesian).
+    float_mode     <- identical(lp_mode, "floating")
     use_end_labels <- isTRUE(input$show_end_labels) || direct_labels
 
     plot_data$variable <- factor(plot_data$variable, levels = samples)
@@ -4952,7 +5193,7 @@ server <- function(input, output, session) {
       axis.ticks        = element_line(color = "black", linewidth = 0.5),
       axis.ticks.length = unit(0.15, "cm"),
       legend.position   = {
-        if (use_end_labels) "none"
+        if (use_end_labels || float_mode) "none"
         else if (!is.null(auto_corner)) auto_corner$pos
         else if (lp_mode == "inside") c(
           if (!is.null(input$legend_x)) input$legend_x else 0.85,
@@ -4961,7 +5202,7 @@ server <- function(input, output, session) {
         else lp_mode
       },
       legend.justification =
-        if (use_end_labels) "center"
+        if (use_end_labels || float_mode) "center"
         else if (!is.null(auto_corner)) auto_corner$just
         else if (lp_mode == "inside") c("right", "top")
         else "center",
@@ -4980,7 +5221,7 @@ server <- function(input, output, session) {
     # Reserve a fixed right margin when the legend isn't consuming space externally,
     # so the panel stays the same size whether legend is visible or not.
     eff_leg <- if (use_end_labels) "none" else lp_mode
-    if (eff_leg %in% c("none", "inside", "auto_inside")) {
+    if (eff_leg %in% c("none", "inside", "auto_inside", "floating")) {
       rsv <- if (!is.null(input$legend_reserve_space)) input$legend_reserve_space else 130
       p <- p + theme(plot.margin = margin(5, rsv, 5, 5, "pt"))
     }
@@ -5049,6 +5290,35 @@ server <- function(input, output, session) {
           p + annotate("text", x = x_rng[2], y = input$threshold_value,
                        label = lbl, hjust = 1.05, vjust = -0.4,
                        color = thr_col, size = 3.5)
+      }
+    }
+
+    # ── Floating draggable legend labels ──────────────────────────────────────
+    # One textGrob per sample, positioned in npc (panel-fraction) units and
+    # handed straight to the panel by annotation_npc(). npc is scale-agnostic,
+    # so log axes and custom limits need no special handling, and PPTX/GIF
+    # frames that call build_plot() with a sample subset only get labels for
+    # the samples they actually show.
+    if (float_mode && n_vars > 0) {
+      fpos  <- tryCatch(float_positions(samples), error = function(e) NULL)
+      ffam  <- if (!is.null(input$font_family)) input$font_family else "sans"
+      fface <- if (!is.null(input$legend_text_face)) input$legend_text_face else "plain"
+      if (!is.null(fpos)) for (i in seq_len(n_vars)) {
+        xy <- fpos[[samples[i]]]
+        if (is.null(xy) || length(xy) < 2 || !all(is.finite(xy[1:2]))) next
+        raw_lab <- leg_labels[[i]]
+        # _{}/^{} markup becomes a plotmath expression; textGrob accepts one.
+        lab_g   <- if (markup_has(raw_lab)) markup_label(raw_lab) else raw_lab
+        p <- p + annotation_npc(
+          grid::textGrob(
+            label = lab_g,
+            x    = grid::unit(xy[1], "npc"),
+            y    = grid::unit(xy[2], "npc"),
+            name = paste0("float_label_", safe_id(samples[i])),
+            gp   = grid::gpar(col        = display_colors[i],
+                              fontsize   = legend_text_pt,
+                              fontfamily = ffam,
+                              fontface   = fface)))
       }
     }
 
@@ -5139,11 +5409,111 @@ server <- function(input, output, session) {
 
   output$plot_container <- renderUI({
     # Container expands rightward to fit the legend; panel size stays constant.
+    # The relative wrapper anchors #float_overlay, the drag surface for the
+    # "floating" legend mode. The overlay itself is click-through
+    # (pointer-events:none); only the labels inside it take pointer events, so
+    # plot_click keeps working everywhere else.
     extra_px <- legend_extra_px()
-    plotOutput("od_plot",
-               height = paste0(input$plot_height, "px"),
-               width  = paste0(input$plot_width + extra_px, "px"),
-               click  = "plot_click")
+    div(id    = "od_plot_wrap",
+        style = "position:relative;display:inline-block;",
+        plotOutput("od_plot",
+                   height = paste0(input$plot_height, "px"),
+                   width  = paste0(input$plot_width + extra_px, "px"),
+                   click  = "plot_click"),
+        div(id    = "float_overlay",
+            style = paste0("position:absolute;left:0;top:0;",
+                           "width:100%;height:100%;",
+                           "pointer-events:none;display:none;")))
+  })
+
+  # ── Floating labels: panel geometry handed to the browser ────────────────────
+  # Must run while the renderPlot device is still open — convertWidth/Height
+  # resolve grid units against the active device. The gtable's panel cell is a
+  # fixed pt size (fix_panel_size), and everything left of / above it is
+  # absolute too, so the sums give the panel's offset inside the table.
+  # The table itself is CENTRED on the device by grid.layout, and after
+  # fix_panel_size its total size rarely equals the device exactly, so the
+  # centring offset (dev - total)/2 has to be added — it is negative when the
+  # reserved right margin pushes the table wider than the image.
+  # grid has no "px" unit: convert to inches and scale by the render resolution
+  # (renderPlot below uses res = 96, so 1 in = 96 CSS px).
+  FLOAT_DPI <- 96
+  float_send_bounds <- function(g) {
+    off <- function() {
+      session$sendCustomMessage("floatPanelBounds", list(active = FALSE))
+      invisible(NULL)
+    }
+    lp <- if (!is.null(input$legend_position)) input$legend_position else "right"
+    if (!identical(lp, "floating")) return(off())
+    samps <- input$selected_samples
+    if (is.null(samps) || length(samps) == 0) return(off())
+
+    geom <- tryCatch({
+      pos <- g$layout[g$layout$name == "panel", , drop = FALSE]
+      if (nrow(pos) < 1) stop("no panel cell")
+      pos <- pos[1, ]
+      cw  <- function(u) grid::convertWidth( u, "in", valueOnly = TRUE) * FLOAT_DPI
+      ch  <- function(u) grid::convertHeight(u, "in", valueOnly = TRUE) * FLOAT_DPI
+      # Device size == the size of the image the browser will show, because
+      # od_plot is rendered with execOnResize = TRUE (without it Shiny replays a
+      # recording at the new size without re-running this code, and the bounds
+      # would be stale by the reserved-legend width).
+      dev_w <- cw(grid::unit(1, "npc"))
+      dev_h <- ch(grid::unit(1, "npc"))
+      # The gtable is centred inside the image by grid.layout.
+      off_x <- (dev_w - cw(sum(g$widths)))  / 2
+      off_y <- (dev_h - ch(sum(g$heights))) / 2
+      list(left = off_x + (if (pos$l > 1) cw(sum(g$widths[ seq_len(pos$l - 1)])) else 0),
+           top  = off_y + (if (pos$t > 1) ch(sum(g$heights[seq_len(pos$t - 1)])) else 0),
+           w    = cw(g$widths[ pos$l]),
+           h    = ch(g$heights[pos$t]))
+    }, error = function(e) NULL)
+    if (is.null(geom)) return(off())
+    gv <- unlist(geom)
+    if (!all(is.finite(gv)) || geom$w <= 0 || geom$h <= 0) return(off())
+
+    av <- tryCatch(resolve_aesthetics(samps), error = function(e) NULL)
+    if (is.null(av)) return(off())
+    fp  <- float_positions(samps)
+    lfs <- suppressWarnings(as.numeric(input$legend_font_size %||% NA))
+    fsz <- if (length(lfs) == 1 && is.finite(lfs)) lfs
+           else if (!is.null(input$axis_text_font_size)) input$axis_text_font_size else 12
+    if (!is.numeric(fsz) || length(fsz) != 1 || !is.finite(fsz)) fsz <- 12
+
+    items <- lapply(seq_along(samps), function(i) {
+      vn <- samps[i]
+      list(name     = vn,
+           id       = safe_id(vn),
+           label    = as.character(av$leg_labels[[i]]),
+           color    = as.character(av$colors[[i]]),
+           fx       = unname(fp[[vn]][1]),
+           fy       = unname(fp[[vn]][2]),
+           fontsize = as.numeric(fsz))
+    })
+    session$sendCustomMessage("floatPanelBounds", list(
+      active = TRUE,
+      left   = geom$left, top = geom$top, w = geom$w, h = geom$h,
+      family = if (!is.null(input$font_family)) input$font_family else "sans",
+      samples = items))
+    invisible(NULL)
+  }
+
+  # A label was dropped: store its panel fraction and let the plot redraw with
+  # the annotation baked in (a fresh floatPanelBounds then re-syncs the overlay).
+  observeEvent(input$float_drop, {
+    fd <- input$float_drop
+    if (is.null(fd) || is.null(fd$name)) return()
+    fx <- suppressWarnings(as.numeric(fd$fx))
+    fy <- suppressWarnings(as.numeric(fd$fy))
+    if (!is.finite(fx) || !is.finite(fy)) return()
+    cur <- rv$float_pos
+    cur[[as.character(fd$name)]] <- c(min(1, max(0, fx)), min(1, max(0, fy)))
+    rv$float_pos <- cur
+  })
+
+  observeEvent(input$float_reset, {
+    rv$float_pos <- list()
+    showNotification("Floating label positions reset.", type = "message")
   })
 
   # Click-to-place legend
@@ -5437,8 +5807,16 @@ server <- function(input, output, session) {
                      base_h_px = if (!is.null(input$plot_height)) input$plot_height else 600),
       error = function(e) ggplotGrob(p)
     )
+    # Measure the panel BEFORE drawing: grid.draw can leave the viewport stack
+    # somewhere other than the root, and relative units would then resolve
+    # against the wrong viewport.
+    tryCatch(float_send_bounds(g), error = function(e) invisible(NULL))
     grid::grid.draw(g)
-  }, res = 96)
+    # execOnResize: the floating-label overlay needs panel bounds measured on a
+    # device the size of the image the client actually shows. Shiny's default
+    # replays the recorded plot at the new size WITHOUT re-running this block,
+    # which would leave the overlay positioned for the previous width.
+  }, res = 96, execOnResize = TRUE)
   
   output$downloadPlot <- downloadHandler(
     filename = function()
@@ -5460,7 +5838,13 @@ server <- function(input, output, session) {
         # cairo_pdf embeds system fonts (Microsoft Sans Serif, Segoe UI, ...)
         # that the base pdf() device cannot map
         pdf  = grDevices::cairo_pdf(file, width = total_w_in, height = h_in),
-        svg  = grDevices::svg( file, width = total_w_in, height = h_in),
+        # svglite with fix_text_size = FALSE: real <text> elements (editable
+        # in Inkscape/Illustrator) with NO forced textLength, so resizing or
+        # re-fonting text in an editor never stretches the glyphs. The cairo
+        # svg device converts text to path outlines, which is what makes
+        # figures uneditable.
+        svg  = svglite::svglite(file, width = total_w_in, height = h_in,
+                                fix_text_size = FALSE),
         png  = grDevices::png( file, width = total_w_in * dpi, height = h_in * dpi,
                                res = dpi, units = "px"),
         tiff = grDevices::tiff(file, width = total_w_in * dpi, height = h_in * dpi,
@@ -7841,6 +8225,11 @@ server <- function(input, output, session) {
         args <- list(fp, plot = p, device = fmt, width = w, height = h, dpi = dpi_v)
         # TIFF must be losslessly compressed (journal requirement)
         if (identical(fmt, "tiff")) args$compression <- "lzw"
+        # SVG: svglite without forced text widths -> editable text in Inkscape
+        if (identical(fmt, "svg"))
+          args$device <- function(filename, width, height, ...)
+            svglite::svglite(filename, width = width, height = height,
+                             fix_text_size = FALSE)
         tryCatch(do.call(ggsave, args), error = function(e) NULL)
         if (file.exists(fp)) files <<- c(files, fp)
       }
