@@ -242,6 +242,12 @@ pick_legend_corner <- function(plot_data, y_log = FALSE) {
 # Unit conversions: 1 px = 0.75 pt at 96 dpi; 1 in = 72 pt.
 # Defined at top level (outside the server) so the whole geometry layer is
 # unit-testable without a Shiny session.
+# A single-panel ggplot names its panel cell "panel"; facet_wrap()/facet_grid()
+# name them "panel-<col>-<row>".  EVERY panel cell has to be pinned, otherwise a
+# multi-panel figure would size only its first sub-panel and let the rest float.
+PANEL_CELL_RE   <- "^panel(-[0-9]+-[0-9]+)?$"
+gtable_is_panel <- function(nm) grepl(PANEL_CELL_RE, nm)
+
 fix_panel_size <- function(p, base_w_px, base_h_px,
                            panel_w_pt = NULL, panel_h_pt = NULL) {
   if (is.null(panel_w_pt)) panel_w_pt <- base_w_px * 0.75 * 0.68
@@ -249,9 +255,12 @@ fix_panel_size <- function(p, base_w_px, base_h_px,
   panel_w_pt <- max(panel_w_pt, 60)
   panel_h_pt <- max(panel_h_pt, 50)
   g   <- if (inherits(p, "gtable")) p else ggplotGrob(p)
-  pos <- g$layout[g$layout$name == "panel", , drop = FALSE]
-  g$widths[pos$l]  <- grid::unit(panel_w_pt, "pt")
-  g$heights[pos$t] <- grid::unit(panel_h_pt, "pt")
+  pos <- g$layout[gtable_is_panel(g$layout$name), , drop = FALSE]
+  # unique(): a facet grid repeats the same layout column/row for every panel
+  # sitting in it.  With a single panel these are single values, so the gtable
+  # that comes out of here is identical to the pre-facet behaviour.
+  g$widths[unique(pos$l)]  <- grid::unit(panel_w_pt, "pt")
+  g$heights[unique(pos$t)] <- grid::unit(panel_h_pt, "pt")
   g
 }
 
@@ -277,9 +286,13 @@ measure_canvas_in <- function(g) {
 # inside}; older builds emit a single "guide-box".  Either way the right legend
 # is the guide cell sitting in a column to the RIGHT of the panel.
 gtable_panel_pos <- function(g) {
-  pos <- g$layout[g$layout$name == "panel", , drop = FALSE]
+  pos <- g$layout[gtable_is_panel(g$layout$name), , drop = FALSE]
   if (nrow(pos) < 1) NULL else pos[1, ]
 }
+
+# Every panel cell of a gtable (one row per sub-panel of a facet grid).
+gtable_panel_cells <- function(g)
+  g$layout[gtable_is_panel(g$layout$name), , drop = FALSE]
 
 gtable_legend_col <- function(g) {
   pos <- gtable_panel_pos(g)
@@ -470,6 +483,7 @@ pub_preset_settings <- function(name) {
       title_font_size = 10, axis_label_font_size = 9, axis_text_font_size = 8,
       legend_font_size = 8,
       line_thickness = 0.7, shape_size = 1.6, color_palette = "colorblind",
+      axis_frame = "L",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     onehalf = list(
       export_width = 5.51, export_height = 4.1, export_dpi = 600,
@@ -478,6 +492,7 @@ pub_preset_settings <- function(name) {
       title_font_size = 11, axis_label_font_size = 10, axis_text_font_size = 9,
       legend_font_size = 9,
       line_thickness = 0.7, shape_size = 1.6, color_palette = "colorblind",
+      axis_frame = "L",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     double = list(
       export_width = 7.2, export_height = 5.0, export_dpi = 600,
@@ -486,6 +501,7 @@ pub_preset_settings <- function(name) {
       title_font_size = 12, axis_label_font_size = 10, axis_text_font_size = 9,
       legend_font_size = 9,
       line_thickness = 0.8, shape_size = 2, color_palette = "colorblind",
+      axis_frame = "L",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     pdfvec = list(
       export_width = 7, export_height = 5, export_dpi = 300,
@@ -507,9 +523,26 @@ pub_preset_settings <- function(name) {
       use_advanced_ticks = TRUE, bold_title = TRUE,
       title_font_size = 18, axis_label_font_size = 16, axis_text_font_size = 14,
       legend_font_size = 14,
-      line_thickness = 1.2, shape_size = 2.6,
+      line_thickness = 1.2, shape_size = 2.6, axis_frame = "box",
       show_major_gridlines = FALSE, show_minor_gridlines = FALSE),
     NULL)
+}
+
+# ── Band (ribbon) style ──────────────────────────────────────────────────────
+# One click turns a points-and-error-bars figure into the thin-line + shaded
+# band look of most published growth / lysis curves.  Top level (outside the
+# server) so the mapping is unit-testable without a Shiny session.  The error
+# STATISTIC is only forced to SD when none is in use — a plot already showing
+# SEM or 95% CI keeps what the author chose.
+band_style_settings <- function(current_error_type = NULL) {
+  et <- if (!is.null(current_error_type) && length(current_error_type) == 1 &&
+            current_error_type %in% c("sd", "sem", "ci95")) current_error_type else "sd"
+  list(show_points        = FALSE,
+       line_thickness     = 0.8,
+       error_type         = et,
+       error_display_mode = "shadow",
+       shadow_alpha       = 0.25,
+       axis_frame         = "L")
 }
 
 PUB_PRESET_CHOICES <- c("— choose a preset —"                      = "",
@@ -584,11 +617,19 @@ FONT_FAMILY_CHOICES <- c("Microsoft Sans Serif"         = "Microsoft Sans Serif"
 #
 # Limitation: plotmath has no line break, so a string that contains BOTH a
 # newline and markup cannot be rendered; those fall back to the raw text.
-MARKUP_RE   <- "(_|\\^)\\{[^}]*\\}"
+# `*gene*` renders italic and `**text**` bold, composable with _{}/^{} --
+# "\u0394*bshC*", "*mltG*", "OD_{600} *x*".  A literal asterisk is written \*;
+# the escape is part of the pattern so a string containing only \* still takes
+# the markup path (and comes out with the backslash dropped).
+MARKUP_RE   <- paste0("\\\\\\*",                 # \*  escaped literal asterisk
+                      "|(_|\\^)\\{[^}]*\\}",     # _{..} / ^{..}
+                      "|\\*\\*[^*]+\\*\\*",      # **bold**
+                      "|\\*[^*]+\\*")            # *italic*
 MARKUP_HINT <- paste0(
   "Highlight characters, then click a button or press Ctrl+= (subscript) / ",
   "Ctrl+Shift+= (superscript). Click again to undo. ",
-  "Advanced: A_{550} / 10^{-7} markup also works (not with multi-line text).")
+  "Advanced: A_{550} / 10^{-7} markup also works (not with multi-line text); ",
+  "*text* renders italic and **text** bold (write \\* for a literal asterisk).")
 
 # Sub/superscript buttons that act on the LAST text field the user was in
 # (client-side csConvertLast; onmousedown keeps the selection alive).
@@ -607,7 +648,7 @@ markup_buttons_last <- function()
 markup_has <- function(s) {
   if (is.null(s) || length(s) == 0) return(logical(0))
   s   <- as.character(s)
-  out <- grepl(MARKUP_RE, s)
+  out <- grepl(MARKUP_RE, s, perl = TRUE)
   out[is.na(s)] <- FALSE
   out
 }
@@ -619,13 +660,15 @@ markup_quote <- function(txt) encodeString(txt, quote = "\"")
 #   "A_{550}"     -> "\"A\"[\"550\"]"
 #   "10^{-7} PFU" -> "\"10\"^\"-7\"*\" PFU\""
 #   "^{2}H"       -> "\"\"^\"2\"*\"H\""     (leading markup gets an empty base)
+#   "*mltG*"      -> "italic(\"mltG\")"
+#   "**n**"       -> "bold(\"n\")"
 #   "abc"         -> "\"abc\""              (plain text -> one quoted literal)
 # Returns NA_character_ when the string mixes a newline with markup.
 markup_to_plotmath <- function(s) {
   if (is.null(s) || length(s) != 1) return(NA_character_)
   s <- as.character(s)
   if (is.na(s)) return(NA_character_)
-  m <- gregexpr(MARKUP_RE, s)[[1]]
+  m <- gregexpr(MARKUP_RE, s, perl = TRUE)[[1]]
   if (m[1] == -1L) return(markup_quote(s))          # no markup: single literal
   if (grepl("\n", s, fixed = TRUE)) return(NA_character_)
   starts <- as.integer(m)
@@ -637,13 +680,26 @@ markup_to_plotmath <- function(s) {
     if (st > pos) atoms <- c(atoms, markup_quote(substr(s, pos, st - 1L)))
     seg   <- substr(s, st, st + ln - 1L)
     op    <- substr(seg, 1L, 1L)
-    inner <- substr(seg, 3L, nchar(seg) - 1L)
-    if (length(atoms) == 0L) atoms <- "\"\""        # nothing to attach to yet
-    j <- length(atoms)
-    atoms[j] <- if (identical(op, "_"))
-      paste0(atoms[j], "[", markup_quote(inner), "]")
-    else
-      paste0(atoms[j], "^", markup_quote(inner))
+    if (identical(seg, "\\*")) {
+      # Escaped asterisk: its own literal atom, so "a\*b" prints a*b.
+      atoms <- c(atoms, markup_quote("*"))
+    } else if (identical(op, "*")) {
+      # *italic* / **bold** are standalone plotmath calls, juxtaposed with the
+      # surrounding literals by the "*" operator like every other atom.
+      bold  <- identical(substr(seg, 1L, 2L), "**")
+      inner <- if (bold) substr(seg, 3L, nchar(seg) - 2L)
+               else      substr(seg, 2L, nchar(seg) - 1L)
+      atoms <- c(atoms, paste0(if (bold) "bold(" else "italic(",
+                               markup_quote(inner), ")"))
+    } else {
+      inner <- substr(seg, 3L, nchar(seg) - 1L)
+      if (length(atoms) == 0L) atoms <- "\"\""      # nothing to attach to yet
+      j <- length(atoms)
+      atoms[j] <- if (identical(op, "_"))
+        paste0(atoms[j], "[", markup_quote(inner), "]")
+      else
+        paste0(atoms[j], "^", markup_quote(inner))
+    }
     pos <- st + ln
   }
   if (pos <= nchar(s)) atoms <- c(atoms, markup_quote(substr(s, pos, nchar(s))))
@@ -806,8 +862,13 @@ html_escape <- function(x) {
 # Renders the _{...} / ^{...} plot-text markup as real HTML sub/superscripts.
 # Runs on an ALREADY-ESCAPED string (the braces survive html_escape untouched).
 markup_to_html <- function(x) {
+  esc <- "\u0001AST\u0001"                        # park \* out of harm's way
+  x <- gsub("\\\\\\*", esc, x)
   x <- gsub("_\\{([^}]*)\\}",   "<sub>\\1</sub>", x)
-  gsub("\\^\\{([^}]*)\\}", "<sup>\\1</sup>", x)
+  x <- gsub("\\^\\{([^}]*)\\}", "<sup>\\1</sup>", x)
+  x <- gsub("\\*\\*([^*]+)\\*\\*", "<b>\\1</b>", x)
+  x <- gsub("\\*([^*]+)\\*",       "<i>\\1</i>", x)
+  gsub(esc, "*", x, fixed = TRUE)
 }
 
 html_table <- function(df, digits = 5, class = NULL) {
@@ -2231,7 +2292,16 @@ ui <- fluidPage(
                                    choices  = c("Horizontal (0°)" = "0",
                                                 "Angled (45°)"    = "45",
                                                 "Vertical (90°)"  = "90"),
-                                   selected = "0")
+                                   selected = "0"),
+                       h5("Axis Frame", style = "margin-top:12px;"),
+                       selectInput("axis_frame", "Axis frame:",
+                                   choices  = c("Full box"        = "box",
+                                                "L-shaped (open)" = "L",
+                                                "None"            = "none"),
+                                   selected = "box"),
+                       p(style = "font-size:.8em;color:#888;margin-top:-8px;",
+                         "L-shaped keeps only the left and bottom rules — the open-axis ",
+                         "house style of most journals.")
                    )
                  ),
                  # ── Time Point Filtering ──────────────────────────────────────────────────
@@ -2265,6 +2335,57 @@ ui <- fluidPage(
                                       style = "width:100%;background:#2C3E50;color:white;border:none;font-size:.85em;")
                        )
                    )
+                 )
+                   ),
+
+                   tabPanel("Panels",
+                 # ── Multi-panel figure ────────────────────────────────────────────────────
+                 div(class = "panel-section",
+                     h4("Multi-Panel Figure", class = "panel-title"),
+                     p(style = "font-size:.85em;color:#555;",
+                       "Split the curves into a grid of sub-panels — the strain / condition ",
+                       "facet grid used by most published growth-curve figures."),
+                     checkboxInput("enable_facets", "Split into panels (multi-panel figure)", FALSE),
+                     conditionalPanel(
+                       condition = "input.enable_facets == true",
+                       selectInput("facet_source", "Panel assignment:",
+                                   choices  = c("Assign samples manually" = "manual"),
+                                   selected = "manual"),
+                       uiOutput("facet_manual_ui"),
+                       fluidRow(
+                         column(6, numericInput("facet_ncol", "Panels per row:", 2, 1, 6)),
+                         column(6, selectInput("facet_scales", "Axis scales:",
+                                               choices  = c("Shared axes" = "fixed",
+                                                            "Free y"      = "free_y",
+                                                            "Free x"      = "free_x",
+                                                            "Free both"   = "free"),
+                                               selected = "fixed"))
+                       ),
+                       fluidRow(
+                         column(6, selectInput("facet_strip_style", "Panel headers:",
+                                               choices  = c("Grey strip (default)" = "grey",
+                                                            "Plain bold title"     = "plain",
+                                                            "None"                 = "none"),
+                                               selected = "grey")),
+                         column(6, numericInput("facet_strip_size", "Strip text size:", 16, 6, 32))
+                       ),
+                       p(style = "font-size:.8em;color:#888;margin-top:-4px;",
+                         "With exact-panel mode on EVERY sub-panel gets the panel size you ",
+                         "typed, and the canvas grows to fit the grid. Floating drag-to-place ",
+                         "labels are not available with panels.")
+                     )
+                 ),
+                 # ── Panel letter ─────────────────────────────────────────────────────────
+                 div(class = "panel-section",
+                     h4("Panel Letter", class = "panel-title"),
+                     p(style = "font-size:.85em;color:#555;",
+                       "The bold A / B / C tag journals set outside the top-left corner of a ",
+                       "figure panel. It adds canvas, never panel space. Leave blank for none."),
+                     textInput("panel_letter", "Panel letter (e.g. A, b, e):", ""),
+                     fluidRow(
+                       column(6, numericInput("panel_letter_size", "Letter size:", 20, 6, 48)),
+                       column(6, checkboxInput("panel_letter_bold", "Bold", TRUE))
+                     )
                  )
                    ),
 
@@ -2312,10 +2433,21 @@ ui <- fluidPage(
                                                 "Colorblind-safe (Okabe-Ito)" = "colorblind",
                                                 "Publication"         = "publication",
                                                 "Rainbow"             = "rainbow",
-                                                "Grayscale"           = "gray"),
+                                                "Grayscale"           = "gray",
+                                                "Dose gradient (blue→red)" = "dose_blue_red",
+                                                "Dose gradient (blues)"     = "dose_blues"),
                                    selected = "custom"),
                        htmlOutput("palette_preview")
                    )
+                 ),
+                 # ── One-click publication looks ────────────────────────────────────────────
+                 div(class = "panel-section",
+                     h4("Publication Looks", class = "panel-title"),
+                     actionButton("style_band", "Apply band style",
+                                  style = "width:100%;font-size:.85em;"),
+                     p(style = "font-size:.8em;color:#888;margin:6px 0 0 0;",
+                       "Thin lines, no points, a shaded SD band and L-shaped open axes — ",
+                       "the ribbon look used for growth / lysis curves in Nature and Cell.")
                  ),
                  # ── Line & Point Settings ─────────────────────────────────────────────────
                  tags$details(
@@ -2405,6 +2537,16 @@ ui <- fluidPage(
                                                  "Legend Font Size (blank = follow Axis Text):",
                                                  value = 18, min = 5, max = 32))
                        ),
+                       fluidRow(style = "margin-top:6px;",
+                         column(7, textInput("legend_title", "Legend title:", "",
+                                             placeholder = "e.g. MOI")),
+                         column(5, numericInput("legend_key_size", "Key size (pt):",
+                                                value = NA, min = 5, max = 40))
+                       ),
+                       p(style = "font-size:.80em;color:#888;margin-top:-6px;margin-bottom:6px;",
+                         "A legend title names the series \u2014 MOI, Phage, Temperature. ",
+                         "Blank = no title (the behaviour before this option existed). ",
+                         "Key size blank = ggplot default."),
                        p(style = "font-size:.82em;color:#888;margin-top:4px;margin-bottom:0;",
                          "(leave blank to follow Axis Text size)")
                    )
@@ -3779,6 +3921,12 @@ server <- function(input, output, session) {
                                    "#FF7F00","#FFFF33","#A65628","#F781BF"), n),
            rainbow     = rainbow(n),
            gray        = gray.colors(n, start = 0.15, end = 0.85),
+           # Dose / dilution series: a diverging blue-to-red ramp and a
+           # sequential blues ramp.  Both are assigned in the current sample
+           # order, so a low-to-high MOI list reads as a gradient.
+           dose_blue_red = colorRampPalette(c("#2166AC", "#67A9CF", "#D1E5F0",
+                                              "#FDDBC7", "#EF8A62", "#B2182B"))(n),
+           dose_blues    = colorRampPalette(c("#DEEBF7", "#4292C6", "#08306B"))(n),
            NULL
     )
   }
@@ -3828,6 +3976,25 @@ server <- function(input, output, session) {
       .shiny-notification { background:#1e2d3d !important; color:#e0e0e0 !important; }
       .wit-label { color: #7a9bb5 !important; }
     "))
+  })
+
+  # One-click band (ribbon) style. Pure update* calls - the value mapping lives
+  # in the top-level band_style_settings() so it is unit-testable.
+  observeEvent(input$style_band, {
+    vals <- band_style_settings(input$error_type)
+    tryCatch({
+      updateCheckboxInput(session, "show_points",        value    = vals$show_points)
+      updateSliderInput(  session, "line_thickness",     value    = vals$line_thickness)
+      updateSelectInput(  session, "error_type",         selected = vals$error_type)
+      updateSelectInput(  session, "error_display_mode", selected = vals$error_display_mode)
+      updateSliderInput(  session, "shadow_alpha",       value    = vals$shadow_alpha)
+      updateSelectInput(  session, "axis_frame",         selected = vals$axis_frame)
+    }, error = function(e) invisible(NULL))
+    showNotification(sprintf(
+      paste("Band style applied: points off, line %.1f, %s drawn as a shaded band",
+            "(alpha %.2f), L-shaped open axes."),
+      vals$line_thickness, toupper(vals$error_type), vals$shadow_alpha),
+      type = "message")
   })
 
   observeEvent(input$color_palette, {
@@ -4058,7 +4225,10 @@ server <- function(input, output, session) {
         shape        = input[[paste0("shape_",        vid)]],
         shape_filled = input[[paste0("shape_filled_", vid)]],
         line_type    = input[[paste0("line_type_",    vid)]],
-        legend_label = if (!is.null(leg) && nchar(leg) > 0) leg else vn
+        legend_label = if (!is.null(leg) && nchar(leg) > 0) leg else vn,
+        # Multi-panel assignment travels with the sample, like its colour, so
+        # a settings file / project theme restores the panel layout by name.
+        panel        = input[[paste0("facet_of_", vid)]]
       )
     }
     out
@@ -4074,7 +4244,7 @@ server <- function(input, output, session) {
       sample_prefixes <- c("line_type_","shape_","shape_filled_","color_selector_",
                            "color_","use_rgb_","red_","green_","blue_","alpha_",
                            "use_hex_","hex_color_","legend_label_",
-                           "apply_rgb_","apply_hex_")
+                           "apply_rgb_","apply_hex_","facet_of_")
       # these GLOBAL inputs collide with the per-sample prefixes ("shape_",
       # "color_") and were silently dropped from saved settings files
       global_exceptions <- c("shape_size", "color_palette")
@@ -4123,7 +4293,8 @@ server <- function(input, output, session) {
                          "time_filter_range","exclude_timepoints")
     sample_prefixes <- c("line_type_","shape_","shape_filled_","color_selector_",
                          "color_","use_rgb_","red_","green_","blue_","alpha_",
-                         "use_hex_","hex_color_","legend_label_","apply_rgb_","apply_hex_")
+                         "use_hex_","hex_color_","legend_label_","apply_rgb_","apply_hex_",
+                         "facet_of_")
     global_exceptions <- c("shape_size", "color_palette")   # see save handler note
     is_sample_inp <- function(nm) !(nm %in% global_exceptions) &&
       any(vapply(sample_prefixes, startsWith, logical(1), x = nm))
@@ -4253,6 +4424,8 @@ server <- function(input, output, session) {
         updateSelectInput(session, paste0("line_type_", vid), selected = aes$line_type)
       if (!is.null(aes$legend_label))
         updateTextInput(session, paste0("legend_label_", vid), value = aes$legend_label)
+      if (!is.null(aes$panel))
+        updateTextInput(session, paste0("facet_of_", vid), value = as.character(aes$panel)[1])
       n_hit <- n_hit + 1L
     }
     n_hit
@@ -4495,6 +4668,13 @@ server <- function(input, output, session) {
       axis_text_font_size   = 16,         bold_title             = TRUE,
       italic_axis_labels    = FALSE,      axis_text_angle        = "0",
       enable_highlighting   = FALSE,      enable_time_markers    = FALSE,
+      axis_frame            = "box",
+      enable_facets         = FALSE,      facet_source           = "manual",
+      facet_ncol            = 2,          facet_scales           = "fixed",
+      facet_strip_style     = "grey",     facet_strip_size       = 16,
+      panel_letter          = "",         panel_letter_size      = 20,
+      panel_letter_bold     = TRUE,
+      legend_title          = "",         legend_key_size        = NA_real_,
       color_palette         = "custom",   line_thickness         = 1.2,
       show_points           = TRUE,       shape_size             = 4,
       point_stroke          = 0.5,        show_end_labels        = FALSE,
@@ -4562,6 +4742,7 @@ server <- function(input, output, session) {
           updateCheckboxInput(session, paste0("shape_filled_",   vid), value    = TRUE)
           updateSelectInput(session,   paste0("line_type_",      vid), selected = "solid")
           updateTextInput(session,     paste0("legend_label_",   vid), value    = vn)
+          updateTextInput(session,     paste0("facet_of_",       vid), value    = "Panel 1")
         }, error = function(e) invisible(NULL))
       }
     }
@@ -5010,6 +5191,89 @@ server <- function(input, output, session) {
     apply_sample_time_filters(pd)
   }
 
+  # ── Panel (facet) assignment ──────────────────────────────────────────────────
+  # Long-format data often carries extra descriptor columns (strain, medium,
+  # MOI, replicate group); each is a candidate "facet by" source alongside
+  # manual assignment.  Wide data has no such columns, so only manual is on
+  # offer there.
+  facet_source_choices <- reactive({
+    ch <- c("Assign samples manually" = "manual")
+    if (isTRUE(rv$is_long_format) && !is.null(rv$data)) {
+      cand <- setdiff(names(rv$data),
+                      c(rv$time_col, rv$value_col, rv$group_col, rv$rep_col))
+      if (length(cand) > 0) ch <- c(ch, setNames(cand, paste0("Column: ", cand)))
+    }
+    ch
+  })
+
+  observe({
+    ch  <- facet_source_choices()
+    cur <- isolate(input$facet_source) %||% "manual"
+    updateSelectInput(session, "facet_source", choices = ch,
+                      selected = if (cur %in% ch) cur else "manual")
+  })
+
+  # One text box per selected sample: the panel that sample belongs to.
+  # Samples typed with the same name share a panel.
+  output$facet_manual_ui <- renderUI({
+    if (!identical(input$facet_source %||% "manual", "manual")) return(NULL)
+    samps <- input$selected_samples
+    if (is.null(samps) || length(samps) == 0)
+      return(p(style = "font-size:.85em;color:#888;", "Select samples first."))
+    tagList(
+      p(style = "font-size:.82em;color:#555;margin:6px 0 4px 0;",
+        "Type the panel each sample belongs to \u2014 samples sharing a name share a panel."),
+      lapply(samps, function(vn) {
+        vid <- safe_id(vn)
+        fluidRow(style = "margin-bottom:-14px;",
+          column(5, p(style = paste0("font-size:.85em;margin-top:8px;overflow:hidden;",
+                                     "white-space:nowrap;text-overflow:ellipsis;"), vn)),
+          column(7, textInput(paste0("facet_of_", vid), NULL,
+                              value = isolate(input[[paste0("facet_of_", vid)]]) %||% "Panel 1")))
+      })
+    )
+  })
+
+  # sample name -> panel name.  Manual mode reads the facet_of_* boxes; column
+  # mode takes the first non-missing value of the chosen column for the sample.
+  facet_panel_map <- function(samples) {
+    if (is.null(samples) || length(samples) == 0) return(character(0))
+    src <- input$facet_source %||% "manual"
+    if (!identical(src, "manual") && isTRUE(rv$is_long_format) &&
+        !is.null(rv$data) && !is.null(rv$group_col) && src %in% names(rv$data)) {
+      gv  <- as.character(rv$data[[rv$group_col]])
+      col <- as.character(rv$data[[src]])
+      out <- vapply(samples, function(vn) {
+        hit <- col[gv == vn]
+        hit <- hit[!is.na(hit) & nzchar(hit)]
+        if (length(hit) > 0) hit[1] else "Panel 1"
+      }, character(1))
+      return(setNames(out, samples))
+    }
+    out <- vapply(samples, function(vn) {
+      v <- input[[paste0("facet_of_", safe_id(vn))]]
+      v <- if (is.null(v)) "" else trimws(as.character(v)[1])
+      if (!is.na(v) && nzchar(v)) v else "Panel 1"
+    }, character(1))
+    setNames(out, samples)
+  }
+
+  # Floating labels are npc-positioned against THE panel viewport, so in a facet
+  # grid the same label would be drawn in every panel.  Rather than emit a wrong
+  # figure silently the renderer falls back to a right-hand legend and says so.
+  facet_float_notice <- local({
+    shown <- FALSE
+    function() {
+      if (shown) return(invisible(NULL))
+      shown <<- TRUE
+      tryCatch(showNotification(
+        paste("Floating labels can't be combined with a multi-panel figure \u2014 every",
+              "label would repeat in every panel. Using a right-hand legend instead."),
+        type = "warning", duration = 12), error = function(e) invisible(NULL))
+      invisible(NULL)
+    }
+  })
+
   # ── Aesthetics resolver ──────────────────────────────────────────────────────
   resolve_aesthetics <- function(samples) {
     n          <- length(samples)
@@ -5078,6 +5342,30 @@ server <- function(input, output, session) {
     if (!is.null(highlight_samples))
       for (i in seq_len(n_vars))
         if (!samples[i] %in% highlight_samples) display_colors[i] <- "#DDDDDD"
+
+    # ── Multi-panel faceting ────────────────────────────────────────────────────
+    # `panel` is an ordinary column added to every layer's data; its factor
+    # levels follow the order the panels first appear in the sample selection,
+    # so the grid reads the same way the sample list does.  add_panel() has to
+    # be applied to any layer carrying its OWN data (the replicate-level
+    # displays), or those layers would be repeated in every panel.
+    do_facet <- isTRUE(input$enable_facets) && n_vars > 0
+    fmap     <- if (do_facet)
+      tryCatch(facet_panel_map(samples), error = function(e) NULL) else NULL
+    if (is.null(fmap) || length(fmap) == 0) do_facet <- FALSE
+    panel_levels <- if (do_facet) unique(unname(fmap[samples])) else NULL
+    add_panel <- function(df) {
+      if (!do_facet || is.null(df) || !"variable" %in% names(df)) return(df)
+      df$panel <- factor(unname(fmap[as.character(df$variable)]), levels = panel_levels)
+      df
+    }
+
+    # Legend title: NULL (no title row at all) unless the user typed one, so the
+    # untitled legend is byte-for-byte what it was before this option existed.
+    leg_name <- {
+      lt <- trimws(input$legend_title %||% "")
+      if (length(lt) == 1 && !is.na(lt) && nzchar(lt)) markup_label(lt) else NULL
+    }
     
     # ── Legend mode resolution ────────────────────────────────────────────────
     # Shared by the end-of-line label layer and the theme block below.
@@ -5085,6 +5373,10 @@ server <- function(input, output, session) {
     #   "auto_inside" -> legend dropped into the emptiest corner.
     # The show_end_labels checkbox stays additive for every other mode.
     lp_mode        <- if (!is.null(input$legend_position)) input$legend_position else "right"
+    if (do_facet && identical(lp_mode, "floating")) {
+      lp_mode <- "right"                       # see facet_float_notice() above
+      tryCatch(facet_float_notice(), error = function(e) invisible(NULL))
+    }
     direct_labels  <- identical(lp_mode, "direct")
     #   "floating"    -> no legend box; each name is a draggable text grob
     #                    drawn into the panel (see the block before coord_cartesian).
@@ -5092,6 +5384,7 @@ server <- function(input, output, session) {
     use_end_labels <- isTRUE(input$show_end_labels) || direct_labels
 
     plot_data$variable <- factor(plot_data$variable, levels = samples)
+    plot_data <- add_panel(plot_data)
     p <- ggplot(plot_data,
                 aes(x = time, y = mean_value, group = variable,
                     color = variable, shape = variable, linetype = variable))
@@ -5190,7 +5483,7 @@ server <- function(input, output, session) {
 
     } else if (dm == "spaghetti") {
       # Individual replicate traces rendered behind the mean line
-      rep_d <- tryCatch(prepare_replicate_data(samples), error = function(e) NULL)
+      rep_d <- add_panel(tryCatch(prepare_replicate_data(samples), error = function(e) NULL))
       if (!is.null(rep_d) && nrow(rep_d) > 0 && "replicate" %in% names(rep_d)) {
         s_alpha <- if (!is.null(input$spaghetti_alpha)) input$spaghetti_alpha else 0.35
         p <- p + geom_line(data = rep_d,
@@ -5203,12 +5496,13 @@ server <- function(input, output, session) {
 
     } else if (dm == "quantile_bands") {
       # Nested empirical quantile bands: IQR inner, 2.5–97.5% outer
-      rep_d <- tryCatch(prepare_replicate_data(samples), error = function(e) NULL)
+      rep_d <- add_panel(tryCatch(prepare_replicate_data(samples), error = function(e) NULL))
       if (!is.null(rep_d) && nrow(rep_d) > 0) {
         q_inner <- if (!is.null(input$qband_inner_alpha)) input$qband_inner_alpha else 0.40
         q_outer <- if (!is.null(input$qband_outer_alpha)) input$qband_outer_alpha else 0.15
         qd <- rep_d %>%
-          group_by(time, variable) %>%
+          group_by(across(all_of(c("time", "variable",
+                                   if (do_facet) "panel" else character(0))))) %>%
           summarise(q25  = quantile(rep_value, 0.25,  na.rm = TRUE),
                     q75  = quantile(rep_value, 0.75,  na.rm = TRUE),
                     q025 = quantile(rep_value, 0.025, na.rm = TRUE),
@@ -5228,7 +5522,7 @@ server <- function(input, output, session) {
 
     } else if (dm == "jitter") {
       # Raw replicate observations as jittered points
-      rep_d <- tryCatch(prepare_replicate_data(samples), error = function(e) NULL)
+      rep_d <- add_panel(tryCatch(prepare_replicate_data(samples), error = function(e) NULL))
       if (!is.null(rep_d) && nrow(rep_d) > 0) {
         j_alpha <- if (!is.null(input$jitter_alpha)) input$jitter_alpha else 0.55
         j_size  <- if (!is.null(input$jitter_size))  input$jitter_size  else 1.5
@@ -5241,7 +5535,7 @@ server <- function(input, output, session) {
 
     } else if (dm == "combo") {
       # Semi-transparent replicate traces + light CI ribbon behind the mean line
-      rep_d <- tryCatch(prepare_replicate_data(samples), error = function(e) NULL)
+      rep_d <- add_panel(tryCatch(prepare_replicate_data(samples), error = function(e) NULL))
       if (!is.null(rep_d) && nrow(rep_d) > 0 && "replicate" %in% names(rep_d)) {
         s_alpha <- if (!is.null(input$spaghetti_alpha)) input$spaghetti_alpha else 0.25
         p <- p + geom_line(data = rep_d,
@@ -5289,7 +5583,7 @@ server <- function(input, output, session) {
           inherit.aes = FALSE
         ) +
           scale_shape_manual(values = shape_map, labels = leg_labels_disp,
-                             name = NULL, guide = "none") +
+                             name = leg_name, guide = "none") +
           scale_fill_manual(values = setNames(display_colors, samples),
                             labels = leg_labels_disp, guide = "none")
       } else {
@@ -5305,7 +5599,7 @@ server <- function(input, output, session) {
           inherit.aes = FALSE
         ) +
           scale_shape_manual(values = shape_map, labels = leg_labels_disp,
-                             name = NULL, guide = "none") +
+                             name = leg_name, guide = "none") +
           scale_fill_identity()
       }
     } else if (using_shadow) {
@@ -5348,11 +5642,11 @@ server <- function(input, output, session) {
     }
     
     p <- p +
-      scale_color_manual(   values = setNames(display_colors, samples), labels = leg_labels_disp, name = NULL) +
-      scale_linetype_manual(values = line_types,                         labels = leg_labels_disp, name = NULL)
+      scale_color_manual(   values = setNames(display_colors, samples), labels = leg_labels_disp, name = leg_name) +
+      scale_linetype_manual(values = line_types,                         labels = leg_labels_disp, name = leg_name)
     
     if (!isTRUE(input$show_points))
-      p <- p + scale_shape_manual(values = shapes, labels = leg_labels_disp, name = NULL)
+      p <- p + scale_shape_manual(values = shapes, labels = leg_labels_disp, name = leg_name)
     
     p <- p +
       guides(shape = guide_legend(override.aes = list(alpha = 1)),
@@ -5449,6 +5743,16 @@ server <- function(input, output, session) {
     lfs             <- num1(input$legend_font_size, NA_real_)
     legend_text_pt  <- if (is.finite(lfs)) lfs else num1(input$axis_text_font_size,  12)
     legend_title_pt <- if (is.finite(lfs)) lfs else num1(input$axis_label_font_size, 14)
+    legend_key_pt   <- num1(input$legend_key_size, NA_real_)
+
+    # Axis frame. "box" is the original full rectangle; "L" drops the border and
+    # draws only the left + bottom rules (journal open-axis house style);
+    # "none" leaves the panel unframed.  frame_lw is the linewidth the border
+    # has always used, so an L frame is exactly as heavy as the box was.
+    axis_frame <- input$axis_frame %||% "box"
+    if (!(length(axis_frame) == 1 && axis_frame %in% c("box", "L", "none")))
+      axis_frame <- "box"
+    frame_lw   <- 0.5
 
     # Auto inside placement — least crowded corner of the current data.
     auto_corner <- if (identical(lp_mode, "auto_inside") && !use_end_labels)
@@ -5494,8 +5798,20 @@ server <- function(input, output, session) {
                                        face  = if (!is.null(input$legend_text_face))  input$legend_text_face  else "plain"),
       legend.title      = element_text(size  = legend_title_pt,
                                        face  = if (!is.null(input$legend_text_face))  input$legend_text_face  else "plain"),
-      panel.border      = element_rect(color = "black", fill = NA, linewidth = 0.5)
+      panel.border      = if (identical(axis_frame, "box"))
+        element_rect(color = "black", fill = NA, linewidth = frame_lw)
+        else element_blank()
     )
+
+    if (identical(axis_frame, "L"))
+      p <- p + theme(axis.line          = element_line(colour = "black", linewidth = frame_lw),
+                     axis.line.x.bottom = element_line(colour = "black", linewidth = frame_lw),
+                     axis.line.y.left   = element_line(colour = "black", linewidth = frame_lw))
+    else if (identical(axis_frame, "none"))
+      p <- p + theme(axis.line = element_blank())
+
+    if (is.finite(legend_key_pt))
+      p <- p + theme(legend.key.size = unit(legend_key_pt, "pt"))
 
     # Reserve a fixed right margin when the legend isn't consuming space externally,
     # so the panel stays the same size whether legend is visible or not.
@@ -5607,6 +5923,50 @@ server <- function(input, output, session) {
                               fontfamily = ffam,
                               fontface   = fface)))
       }
+    }
+
+    # ── Facet grid + strip styling ───────────────────────────────────────────────
+    if (do_facet) {
+      fnc <- suppressWarnings(as.numeric(input$facet_ncol %||% 2))
+      if (length(fnc) != 1 || !is.finite(fnc) || fnc < 1) fnc <- 2
+      fsc <- input$facet_scales %||% "fixed"
+      if (!(length(fsc) == 1 && fsc %in% c("fixed", "free_y", "free_x", "free")))
+        fsc <- "fixed"
+      # Strip labels honour the sub/superscript + italic/bold markup. Mirrors
+      # the end-label pattern: only switch to the parsed path when at least one
+      # panel name actually uses markup, so plain names render byte-identically.
+      strip_labeller <- "label_value"
+      if (any(markup_has(panel_levels))) {
+        strip_labeller <- ggplot2::as_labeller(
+          function(x) vapply(as.character(x), markup_to_plotmath, character(1)),
+          default = ggplot2::label_parsed)
+      }
+      p <- p + facet_wrap(~ panel, ncol = as.integer(fnc), scales = fsc,
+                          labeller = strip_labeller)
+      fss <- num1(input$facet_strip_size, num1(input$axis_text_font_size, 16))
+      # The app's base themes (theme_pubr / theme_prism) blank the strip
+      # background, so "grey" has to paint it back on explicitly - otherwise the
+      # three choices would collapse into two.
+      p <- p + switch(input$facet_strip_style %||% "grey",
+        plain = theme(strip.background = element_blank(),
+                      strip.text       = element_text(size = fss, face = "bold")),
+        none  = theme(strip.background = element_blank(),
+                      strip.text       = element_blank()),
+        theme(strip.background = element_rect(fill = "grey85", colour = "grey20"),
+              strip.text       = element_text(size = fss)))
+    }
+
+    # ── Panel letter ────────────────────────────────────────────────────────────
+    # labs(tag=) puts the letter OUTSIDE the panel, in its own gtable cell, so
+    # it adds canvas and never steals panel space from fix_panel_size().
+    pl_txt <- trimws(input$panel_letter %||% "")
+    if (length(pl_txt) == 1 && !is.na(pl_txt) && nzchar(pl_txt)) {
+      pl_sz <- num1(input$panel_letter_size, num1(input$title_font_size, 20))
+      p <- p + labs(tag = markup_label(pl_txt)) +
+        theme(plot.tag = element_text(
+                size = pl_sz,
+                face = if (isFALSE(input$panel_letter_bold)) "plain" else "bold"),
+              plot.tag.position = "topleft")
     }
 
     p + coord_cartesian(clip = "off") +

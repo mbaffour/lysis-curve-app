@@ -93,6 +93,31 @@ legend get whatever extra canvas they need: a 3-sample legend and a
 This is what makes multi-figure layouts line up perfectly. Turning it off
 restores the legacy behavior (canvas size fixed, panel a fraction of it).
 
+### Publication figure layout
+
+New **Panels** sidebar tab and companion controls reproduce the standard
+journal figure grammar:
+
+- **Multi-panel figures** — tick *Split into panels*, then assign each sample
+  to a panel by name (or, for long-format data, facet by any metadata
+  column). Choose panels-per-row, shared or free axes, and strip style
+  (grey strip / plain bold title / none). With exact-panel mode on, **every
+  sub-panel is exactly your specified size** and the canvas grows around the
+  grid, so multi-panel figures align across experiments.
+- **Axis frame** (Axis Settings) — Full box, **L-shaped (open)** as used by
+  most journals, or none. The print presets switch to L-shaped automatically.
+- **Panel letters** — type `A`, `e`, `f`… to place a bold tag outside the
+  panel, top-left, without stealing panel space.
+- **Band style** (Style tab, one click) — thin lines, no points, translucent
+  SD ribbon, open axes: the modern mean±SD ribbon look.
+- **Dose gradients** — palettes *Dose gradient (blue→red)* and *(blues)* map
+  across your samples in order, for MOI/concentration series; add a **legend
+  title** (e.g. `MOI`) and set the legend key size.
+- **Italic / bold text** — `*mltG*` renders italic, `**x**` bold, `\*` a
+  literal asterisk, and it composes with sub/superscripts: `Δ*bshC*`,
+  `OD_{600}`. Works in titles, axis labels, legend entries, and panel strip
+  labels.
+
 ## 5. Error display and replicates
 
 Error type: SD, SEM, or 95% CI (t-based), with a multiplier; displayed as

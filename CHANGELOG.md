@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-08-22 — publication figure layout
+
+- **Multi-panel faceting** (new *Panels* tab): assign samples to panels
+  manually or facet by a metadata column; panels-per-row, shared/free
+  scales, three strip styles. Exact-panel sizing now pins **every** facet
+  panel to the requested size (canvas grows around the grid).
+- **Axis frame**: Full box / L-shaped (open) / none; print presets use L.
+- **Panel letters** (A., e, f…) drawn outside the panel via plot tag.
+- **Band style** one-click preset (thin lines, no points, SD ribbon, L axes).
+- **Dose gradient palettes** (blue→red, blues) for MOI/dilution series,
+  plus legend title and legend key size controls.
+- **Italic/bold markup**: `*italic*`, `**bold**`, `\*` escape, composable
+  with `_{}`/`^{}`; honoured in plot text, reports, and (added during
+  review) facet strip labels via a parsed labeller.
+
 ## 2026-08-20 — figure-craft wave
 
 ### Draggable floating legend labels (`7f3eae3`)
