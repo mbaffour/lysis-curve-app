@@ -5613,8 +5613,11 @@ server <- function(input, output, session) {
       # markup_label() is the identity for text without _{}/^{} markup.
       labs(x        = markup_label(input$x_axis_label),
            y        = markup_label(input$y_axis_label),
-           title    = markup_label(input$plot_title),
-           subtitle = if (nchar(trimws(input$plot_subtitle)) > 0) markup_label(input$plot_subtitle) else NULL,
+           # NULL (not "") when blank so ggplot reserves no title row -
+           # an empty-string title still claims a full line of space above
+           # the panel in every export
+           title    = if (nchar(trimws(input$plot_title %||% "")) > 0) markup_label(input$plot_title) else NULL,
+           subtitle = if (nchar(trimws(input$plot_subtitle %||% "")) > 0) markup_label(input$plot_subtitle) else NULL,
            caption  = if (nchar(notes_cap) > 0) notes_cap else NULL)
   }
   
