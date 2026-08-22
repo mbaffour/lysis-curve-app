@@ -393,9 +393,14 @@ gtable_panel_left_in <- function(g) {
 # scaled; the only correct response is to shrink the panel until the measured
 # canvas fits.  The panel is still identical on every slide, just smaller than
 # the inches typed in the sidebar — reported back as panel_w_pt / panel_h_pt.
+# `attach` (optional): a function(gtable) -> gtable applied to EVERY frame
+# straight after fix_panel_size().  The matrix legend rides in this way, built
+# once from the FULL sample selection, so every build frame carries an
+# identical legend and the parity guarantee is unchanged.
 build_parity_frames <- function(plots, panel_w_pt, panel_h_pt, tol_in = 0.005,
-                                fit_w_in = NULL, fit_h_in = NULL, max_iter = 4L) {
-  res <- parity_frames_once(plots, panel_w_pt, panel_h_pt, tol_in)
+                                fit_w_in = NULL, fit_h_in = NULL, max_iter = 4L,
+                                attach = NULL) {
+  res <- parity_frames_once(plots, panel_w_pt, panel_h_pt, tol_in, attach)
   res$panel_w_pt <- panel_w_pt; res$panel_h_pt <- panel_h_pt; res$fitted <- FALSE
   if (is.null(fit_w_in) || is.null(fit_h_in)) return(res)
   it <- 0L
@@ -405,17 +410,21 @@ build_parity_frames <- function(plots, panel_w_pt, panel_h_pt, tol_in = 0.005,
     s <- max(min(s, 0.999), 0.05)
     panel_w_pt <- panel_w_pt * s
     panel_h_pt <- panel_h_pt * s
-    res <- parity_frames_once(plots, panel_w_pt, panel_h_pt, tol_in)
+    res <- parity_frames_once(plots, panel_w_pt, panel_h_pt, tol_in, attach)
     res$panel_w_pt <- panel_w_pt; res$panel_h_pt <- panel_h_pt; res$fitted <- TRUE
     it <- it + 1L
   }
   res
 }
 
-parity_frames_once <- function(plots, panel_w_pt, panel_h_pt, tol_in = 0.005) {
+parity_frames_once <- function(plots, panel_w_pt, panel_h_pt, tol_in = 0.005,
+                               attach = NULL) {
   n  <- length(plots)
-  gs <- lapply(plots, function(p)
-    fix_panel_size(p, NULL, NULL, panel_w_pt = panel_w_pt, panel_h_pt = panel_h_pt))
+  gs <- lapply(plots, function(p) {
+    g <- fix_panel_size(p, NULL, NULL, panel_w_pt = panel_w_pt, panel_h_pt = panel_h_pt)
+    if (is.function(attach)) g <- attach(g)
+    g
+  })
   # The FINAL frame has the tallest legend, so its pad is the one every frame
   # gets — applying each frame's own pad would change the row count per frame.
   pad <- legend_pad_pt(gs[[n]])
@@ -729,7 +738,227 @@ LEGEND_POSITION_CHOICES <- c("Right"  = "right", "Left" = "left",
                              "Inside — auto (least crowded corner)" = "auto_inside",
                              "Direct labels at line ends"          = "direct",
                              "Floating labels (drag to place)"     = "floating",
+                             "Matrix (grid) legend"                = "matrix",
                              "None"   = "none")
+
+
+# == Matrix (grid) legend =====================================================
+# A Nature-style TWO-FACTOR legend.  COLUMNS are one factor (MOI, say), ROWS
+# another (strain / condition), and every cell is a line swatch drawn with that
+# sample's real colour + linetype (+ point shape when points are on):
+#
+#             MOI    0      0.1     10
+#     Control      -----  -----   -----
+#     Retron-Eco7  -----  -----   -----
+#
+# Built with grid/gtable only and completely free of Shiny: `spec` carries the
+# data (rows / cols / cells), `opts` the styling, so the whole thing is
+# unit-testable.  attach_matrix_legend() bolts it onto the finished plot gtable
+# AFTER fix_panel_size(), which is what keeps the panel exactly the size the
+# user asked for while the canvas grows to hold the legend -- and, because it
+# happens in the GROB pipeline, every consumer (screen, PNG/PDF/SVG, PPTX dml,
+# GIF frames, parity frames) picks it up for free.
+
+# pt-per-mm and stroke-per-mm, matching ggplot2's .pt / .stroke, so a swatch
+# drawn by grid has the same weight as the line ggplot draws in the panel.
+MATRIX_PT     <- 72.27 / 25.4
+MATRIX_STROKE <- 96    / 25.4
+
+# Cell key.  "\r" can never appear in a row/column label typed into a textInput,
+# so paste(row, col, sep = "\r") is a collision-free composite key.
+matrix_legend_key <- function(row, col) paste(row, col, sep = "\r")
+
+matrix_legend_defaults <- function()
+  list(title = "", lwd = 2, show_points = TRUE, point_size = 8, point_lwd = 1,
+       swatch_len = 34, col_gap = 10, row_gap = 8, fontsize = 12,
+       fontfamily = "", fontface = "plain", box = FALSE,
+       box_fill = "white", box_col = "grey20", margin = 4)
+
+# One legend cell: the line (+ optional point) drawn in that sample's style.
+# An undefined cell is a nullGrob so the gtable keeps a grob per cell and the
+# layout never depends on which cells happen to be filled.
+matrix_legend_swatch <- function(cell, o, nm = "mlcell") {
+  if (is.null(cell) || is.null(cell$colour) || length(cell$colour) != 1 ||
+      is.na(cell$colour) || !nzchar(cell$colour))
+    return(grid::nullGrob(name = nm))
+  lty <- cell$linetype
+  if (is.null(lty) || length(lty) != 1 || is.na(lty) || !nzchar(lty)) lty <- "solid"
+  ln <- grid::linesGrob(
+    x    = grid::unit.c(grid::unit(0, "npc"), grid::unit(1, "npc")),
+    y    = grid::unit(c(0.5, 0.5), "npc"),
+    gp   = grid::gpar(col = cell$colour, lty = lty, lwd = o$lwd),
+    name = paste0(nm, "-line"))
+  sh <- suppressWarnings(as.numeric(cell$shape %||% NA))
+  if (!isTRUE(o$show_points) || length(sh) != 1 || !is.finite(sh)) return(ln)
+  pg <- grid::pointsGrob(
+    x = grid::unit(0.5, "npc"), y = grid::unit(0.5, "npc"), pch = sh,
+    gp = grid::gpar(col      = cell$colour,
+                    fill     = if (isTRUE(cell$filled)) cell$colour else NA,
+                    fontsize = o$point_size, lwd = o$point_lwd),
+    name = paste0(nm, "-point"))
+  grid::gTree(children = grid::gList(ln, pg), name = nm)
+}
+
+# spec: list(rows = <chr>, cols = <chr>, cells = named list keyed by
+#            matrix_legend_key(row, col) -> list(sample, colour, linetype,
+#            shape, filled))
+# opts: see matrix_legend_defaults().  Returns a gtable (NULL if unbuildable).
+matrix_legend_grob <- function(spec, opts = list()) {
+  if (is.null(spec)) return(NULL)
+  if (!requireNamespace("gtable", quietly = TRUE)) return(NULL)
+  o <- matrix_legend_defaults()
+  if (length(opts)) for (nm in names(opts)) {
+    v <- opts[[nm]]
+    if (is.null(v) || length(v) != 1L) next
+    if (is.na(v))                      next
+    o[[nm]] <- v
+  }
+  rows <- as.character(spec$rows); cols <- as.character(spec$cols)
+  nr <- length(rows); nc <- length(cols)
+  if (nr < 1L || nc < 1L) return(NULL)
+  cells <- spec$cells
+  if (is.null(cells)) cells <- list()
+
+  gp_txt <- grid::gpar(fontsize = o$fontsize, fontfamily = o$fontfamily,
+                       fontface = o$fontface)
+  # markup_label() may return a plotmath call; textGrob takes language labels.
+  mk_txt <- function(lab, hj, nm)
+    grid::textGrob(markup_label(lab), x = grid::unit(hj, "npc"), hjust = hj,
+                   gp = gp_txt, name = nm)
+
+  col_lab <- lapply(seq_len(nc), function(j) mk_txt(cols[j], 0.5, paste0("mlcol-", j)))
+  row_lab <- lapply(seq_len(nr), function(i) mk_txt(rows[i], 1,   paste0("mlrow-", i)))
+  ttl     <- if (nzchar(trimws(as.character(o$title)))) mk_txt(o$title, 1, "mltitle") else NULL
+
+  # Label cells are sized with grobWidth/grobHeight so nothing is ever clipped.
+  lab_w <- grid::unit(0, "pt")
+  for (gx in row_lab) lab_w <- grid::unit.pmax(lab_w, grid::grobWidth(gx))
+  if (!is.null(ttl))  lab_w <- grid::unit.pmax(lab_w, grid::grobWidth(ttl))
+
+  min_h <- grid::unit(max(o$fontsize, 6) * 1.35, "pt")
+  hdr_h <- min_h
+  for (gx in col_lab) hdr_h <- grid::unit.pmax(hdr_h, grid::grobHeight(gx))
+  if (!is.null(ttl))  hdr_h <- grid::unit.pmax(hdr_h, grid::grobHeight(ttl))
+
+  cell_w <- lapply(col_lab, function(gx)
+    grid::unit.pmax(grid::unit(max(o$swatch_len, 1), "pt"), grid::grobWidth(gx)))
+  row_h  <- lapply(row_lab, function(gx) grid::unit.pmax(min_h, grid::grobHeight(gx)))
+
+  # Layout: [row labels][gap][col 1][gap][col 2]... x [header][gap][row 1]...
+  ws <- lab_w
+  for (j in seq_len(nc)) ws <- grid::unit.c(ws, grid::unit(o$col_gap, "pt"), cell_w[[j]])
+  hs <- hdr_h
+  for (i in seq_len(nr)) hs <- grid::unit.c(hs, grid::unit(o$row_gap, "pt"), row_h[[i]])
+
+  gt <- gtable::gtable(widths = ws, heights = hs, name = "matrix-legend")
+  if (!is.null(ttl))
+    gt <- gtable::gtable_add_grob(gt, ttl, t = 1, l = 1, clip = "off", name = "mltitle")
+  for (j in seq_len(nc))
+    gt <- gtable::gtable_add_grob(gt, col_lab[[j]], t = 1, l = 1 + 2 * j,
+                                  clip = "off", name = paste0("mlcol-", j))
+  for (i in seq_len(nr))
+    gt <- gtable::gtable_add_grob(gt, row_lab[[i]], t = 1 + 2 * i, l = 1,
+                                  clip = "off", name = paste0("mlrow-", i))
+  for (i in seq_len(nr)) for (j in seq_len(nc)) {
+    nm <- paste0("mlcell-", i, "-", j)
+    gt <- gtable::gtable_add_grob(
+      gt, matrix_legend_swatch(cells[[matrix_legend_key(rows[i], cols[j])]], o, nm),
+      t = 1 + 2 * i, l = 1 + 2 * j, clip = "off", name = nm)
+  }
+
+  m <- max(o$margin, 0)
+  if (m > 0) {
+    gt <- gtable::gtable_add_cols(gt, grid::unit(m, "pt"), pos = 0)
+    gt <- gtable::gtable_add_cols(gt, grid::unit(m, "pt"), pos = -1)
+    gt <- gtable::gtable_add_rows(gt, grid::unit(m, "pt"), pos = 0)
+    gt <- gtable::gtable_add_rows(gt, grid::unit(m, "pt"), pos = -1)
+  }
+  # z = 0 puts the box BEHIND every swatch and label.
+  if (isTRUE(o$box))
+    gt <- gtable::gtable_add_grob(
+      gt, grid::rectGrob(gp = grid::gpar(fill = o$box_fill, col = o$box_col, lwd = 0.8)),
+      t = 1, l = 1, b = nrow(gt), r = ncol(gt), z = 0, clip = "off",
+      name = "matrix-legend-box")
+  gt
+}
+
+# Absolute size of any grob (gtables included), resolved on a throw-away pdf
+# device exactly the way measure_canvas_in() does it.
+matrix_grob_size_pt <- function(gr) {
+  cur <- grDevices::dev.cur()
+  grDevices::pdf(NULL, width = 30, height = 30)
+  on.exit({
+    grDevices::dev.off()
+    if (cur > 1) try(grDevices::dev.set(cur), silent = TRUE)
+  }, add = TRUE)
+  # grid::grobWidth() on a gtable does NOT sum the layout widths - it misses
+  # cells sized with max(grobwidth, ...) (e.g. the row-label column), which
+  # under-measures the legend and clips its last column. gtable_width/height
+  # resolve the real layout.
+  wu <- if (inherits(gr, "gtable")) gtable::gtable_width(gr)  else grid::grobWidth(gr)
+  hu <- if (inherits(gr, "gtable")) gtable::gtable_height(gr) else grid::grobHeight(gr)
+  c(w = grid::convertWidth(wu,  "pt", valueOnly = TRUE),
+    h = grid::convertHeight(hu, "pt", valueOnly = TRUE))
+}
+
+# Bolt `leg` onto the finished gtable `g`.  MUST be called AFTER fix_panel_size()
+# and BEFORE measure_canvas_in(): the legend becomes a real gtable cell, so the
+# measured canvas already includes it and the panel cells keep their exact
+# pinned sizes (they are never touched here).  "inside" draws the legend into
+# the panel cell(s) at npc x/y instead of adding a track.
+attach_matrix_legend <- function(g, leg, placement = "right", pad_pt = 8,
+                                 x = 0.85, y = 0.95) {
+  if (is.null(g) || is.null(leg)) return(g)
+  if (!requireNamespace("gtable", quietly = TRUE)) return(g)
+  cells <- tryCatch(gtable_panel_cells(g), error = function(e) NULL)
+  if (is.null(cells) || nrow(cells) < 1) return(g)
+  sz <- tryCatch(matrix_grob_size_pt(leg), error = function(e) NULL)
+  if (is.null(sz) || !all(is.finite(sz))) return(g)
+  if (!is.finite(pad_pt)) pad_pt <- 8
+  pt <- min(cells$t); pb <- max(cells$b)
+  pl <- min(cells$l); pr <- max(cells$r)
+
+  if (identical(placement, "inside")) {
+    if (!is.finite(x)) x <- 0.85
+    if (!is.finite(y)) y <- 0.95
+    vp <- grid::viewport(x = grid::unit(x, "npc"), y = grid::unit(y, "npc"),
+                         width  = grid::unit(sz[["w"]], "pt"),
+                         height = grid::unit(sz[["h"]], "pt"),
+                         just = c(if (x <= 0.5) "left"   else "right",
+                                  if (y <= 0.5) "bottom" else "top"))
+    return(gtable::gtable_add_grob(
+      g, grid::gTree(children = grid::gList(leg), vp = vp, name = "matrix-legend-inside"),
+      t = pt, l = pl, b = pb, r = pr, clip = "off", z = Inf, name = "matrix-legend"))
+  }
+
+  if (placement %in% c("right", "left")) {
+    # Size the track with the gtable's own width unit so it is resolved on the
+    # REAL drawing device at draw time (no cross-device rounding).
+    w <- grid::unit(pad_pt, "pt") + gtable::gtable_width(leg)
+    if (identical(placement, "left")) {
+      g  <- gtable::gtable_add_cols(g, w, pos = 0)
+      lc <- 1L
+      cells <- gtable_panel_cells(g); pt <- min(cells$t); pb <- max(cells$b)
+    } else {
+      g  <- gtable::gtable_add_cols(g, w, pos = -1)
+      lc <- ncol(g)
+    }
+    return(gtable::gtable_add_grob(g, leg, t = pt, l = lc, b = pb, r = lc,
+                                   clip = "off", z = Inf, name = "matrix-legend"))
+  }
+
+  h <- grid::unit(pad_pt, "pt") + gtable::gtable_height(leg)
+  if (identical(placement, "top")) {
+    g  <- gtable::gtable_add_rows(g, h, pos = 0)
+    lr <- 1L
+    cells <- gtable_panel_cells(g); pl <- min(cells$l); pr <- max(cells$r)
+  } else {
+    g  <- gtable::gtable_add_rows(g, h, pos = -1)
+    lr <- nrow(g)
+  }
+  gtable::gtable_add_grob(g, leg, t = lr, l = pl, b = lr, r = pr,
+                          clip = "off", z = Inf, name = "matrix-legend")
+}
 
 CE_TEXT_FACE_CHOICES <- c("Plain" = "plain", "Bold" = "bold",
                           "Italic" = "italic", "Bold Italic" = "bold.italic")
@@ -2511,6 +2740,42 @@ ui <- fluidPage(
                                         style = "font-size:11px;padding:3px 10px;")
                          )
                        ),
+                       # ── Matrix (grid) legend ────────────────────────────────
+                       # Two-factor legend: columns are one factor (MOI), rows
+                       # another (strain).  Each cell is a real line swatch.
+                       conditionalPanel(
+                         condition = "input.legend_position == 'matrix'",
+                         div(style = "margin-top:6px;",
+                           p(style = "font-size:.82em;color:#555;margin-bottom:4px;",
+                             "Type a Row and Column for each sample \u2014 e.g. Row = strain, ",
+                             "Column = MOI. Samples left blank are omitted. Row/column labels ",
+                             "accept *italic*, **bold**, A_{550} markup."),
+                           uiOutput("matrix_legend_ui"),
+                           fluidRow(style = "margin-top:10px;",
+                             column(7, textInput("matrix_legend_title",
+                                                 "Legend title (corner cell):", "",
+                                                 placeholder = "e.g. MOI")),
+                             column(5, selectInput("matrix_legend_placement", "Placement:",
+                                                   choices = c(Right  = "right",
+                                                               Left   = "left",
+                                                               Top    = "top",
+                                                               Bottom = "bottom",
+                                                               "Inside plot" = "inside"),
+                                                   selected = "right"))
+                           ),
+                           fluidRow(
+                             column(4, numericInput("matrix_swatch_len",
+                                                    "Swatch length (pt):", 34, 10, 120)),
+                             column(4, numericInput("matrix_col_gap",
+                                                    "Column gap (pt):", 10, 0, 60)),
+                             column(4, numericInput("matrix_row_gap",
+                                                    "Row gap (pt):", 8, 0, 60))
+                           ),
+                           checkboxInput("matrix_legend_box", "Draw box around legend", FALSE),
+                           checkboxInput("matrix_swatch_points",
+                                         "Show point symbols in swatches", TRUE)
+                         )
+                       ),
                        fluidRow(style = "margin-top:4px;",
                          column(12, checkboxInput("legend_no_box", "No legend background/border", FALSE))
                        ),
@@ -4228,7 +4493,10 @@ server <- function(input, output, session) {
         legend_label = if (!is.null(leg) && nchar(leg) > 0) leg else vn,
         # Multi-panel assignment travels with the sample, like its colour, so
         # a settings file / project theme restores the panel layout by name.
-        panel        = input[[paste0("facet_of_", vid)]]
+        panel        = input[[paste0("facet_of_", vid)]],
+        # Matrix-legend grid cell (row / column), same idea.
+        leg_row      = input[[paste0("legrow_", vid)]],
+        leg_col      = input[[paste0("legcol_", vid)]]
       )
     }
     out
@@ -4244,7 +4512,8 @@ server <- function(input, output, session) {
       sample_prefixes <- c("line_type_","shape_","shape_filled_","color_selector_",
                            "color_","use_rgb_","red_","green_","blue_","alpha_",
                            "use_hex_","hex_color_","legend_label_",
-                           "apply_rgb_","apply_hex_","facet_of_")
+                           "apply_rgb_","apply_hex_","facet_of_",
+                           "legrow_","legcol_")
       # these GLOBAL inputs collide with the per-sample prefixes ("shape_",
       # "color_") and were silently dropped from saved settings files
       global_exceptions <- c("shape_size", "color_palette")
@@ -4294,7 +4563,7 @@ server <- function(input, output, session) {
     sample_prefixes <- c("line_type_","shape_","shape_filled_","color_selector_",
                          "color_","use_rgb_","red_","green_","blue_","alpha_",
                          "use_hex_","hex_color_","legend_label_","apply_rgb_","apply_hex_",
-                         "facet_of_")
+                         "facet_of_","legrow_","legcol_")
     global_exceptions <- c("shape_size", "color_palette")   # see save handler note
     is_sample_inp <- function(nm) !(nm %in% global_exceptions) &&
       any(vapply(sample_prefixes, startsWith, logical(1), x = nm))
@@ -4426,6 +4695,10 @@ server <- function(input, output, session) {
         updateTextInput(session, paste0("legend_label_", vid), value = aes$legend_label)
       if (!is.null(aes$panel))
         updateTextInput(session, paste0("facet_of_", vid), value = as.character(aes$panel)[1])
+      if (!is.null(aes$leg_row))
+        updateTextInput(session, paste0("legrow_", vid), value = as.character(aes$leg_row)[1])
+      if (!is.null(aes$leg_col))
+        updateTextInput(session, paste0("legcol_", vid), value = as.character(aes$leg_col)[1])
       n_hit <- n_hit + 1L
     }
     n_hit
@@ -4675,6 +4948,10 @@ server <- function(input, output, session) {
       panel_letter          = "",         panel_letter_size      = 20,
       panel_letter_bold     = TRUE,
       legend_title          = "",         legend_key_size        = NA_real_,
+      matrix_legend_title   = "",         matrix_legend_placement = "right",
+      matrix_swatch_len     = 34,         matrix_col_gap         = 10,
+      matrix_row_gap        = 8,          matrix_legend_box      = FALSE,
+      matrix_swatch_points  = TRUE,
       color_palette         = "custom",   line_thickness         = 1.2,
       show_points           = TRUE,       shape_size             = 4,
       point_stroke          = 0.5,        show_end_labels        = FALSE,
@@ -4743,6 +5020,8 @@ server <- function(input, output, session) {
           updateSelectInput(session,   paste0("line_type_",      vid), selected = "solid")
           updateTextInput(session,     paste0("legend_label_",   vid), value    = vn)
           updateTextInput(session,     paste0("facet_of_",       vid), value    = "Panel 1")
+          updateTextInput(session,     paste0("legrow_",         vid), value    = "")
+          updateTextInput(session,     paste0("legcol_",         vid), value    = "")
         }, error = function(e) invisible(NULL))
       }
     }
@@ -5258,6 +5537,139 @@ server <- function(input, output, session) {
     setNames(out, samples)
   }
 
+  # ── Matrix (grid) legend: per-sample row/column assignment ───────────────────
+  # Same manual-assignment pattern as facet_of_* above: one text box pair per
+  # selected sample.  Blank row OR blank column = that sample is not placed in
+  # the grid and is simply omitted from the legend.
+  output$matrix_legend_ui <- renderUI({
+    if (!identical(input$legend_position %||% "right", "matrix")) return(NULL)
+    samps <- input$selected_samples
+    if (is.null(samps) || length(samps) == 0)
+      return(p(style = "font-size:.85em;color:#888;", "Select samples first."))
+    tagList(
+      fluidRow(
+        column(5, p(style = "font-size:.78em;color:#555;font-weight:600;margin:6px 0 0 0;", "Sample")),
+        column(3, p(style = "font-size:.78em;color:#555;font-weight:600;margin:6px 0 0 0;", "Row:")),
+        column(4, p(style = "font-size:.78em;color:#555;font-weight:600;margin:6px 0 0 0;", "Column:"))
+      ),
+      lapply(samps, function(vn) {
+        vid <- safe_id(vn)
+        fluidRow(style = "margin-bottom:-14px;",
+          column(5, p(style = paste0("font-size:.85em;margin-top:8px;overflow:hidden;",
+                                     "white-space:nowrap;text-overflow:ellipsis;"), vn)),
+          column(3, textInput(paste0("legrow_", vid), NULL,
+                              value = isolate(input[[paste0("legrow_", vid)]]) %||% "")),
+          column(4, textInput(paste0("legcol_", vid), NULL,
+                              value = isolate(input[[paste0("legcol_", vid)]]) %||% "")))
+      })
+    )
+  })
+
+  # sample -> (row, column) -> one legend cell carrying that sample's real
+  # colour / linetype / shape.  Rows and columns keep the order in which they
+  # first appear across `samples`, so the grid reads the way the sample list
+  # does.  Two samples in one cell: the FIRST wins and the loser is recorded in
+  # attr(, "clashes") for the one-shot warning below.
+  matrix_legend_spec <- function(samples, aes_vals = NULL) {
+    if (is.null(samples) || length(samples) == 0) return(NULL)
+    if (is.null(aes_vals)) aes_vals <- resolve_aesthetics(samples)
+    rows <- character(0); cols <- character(0)
+    cells <- list();      clashes <- character(0)
+    for (vn in samples) {
+      vid <- safe_id(vn)
+      rl  <- trimws(as.character(input[[paste0("legrow_", vid)]] %||% "")[1])
+      cl  <- trimws(as.character(input[[paste0("legcol_", vid)]] %||% "")[1])
+      if (is.na(rl) || is.na(cl) || !nzchar(rl) || !nzchar(cl)) next
+      if (!(rl %in% rows)) rows <- c(rows, rl)
+      if (!(cl %in% cols)) cols <- c(cols, cl)
+      k <- matrix_legend_key(rl, cl)
+      if (!is.null(cells[[k]])) { clashes <- c(clashes, vn); next }
+      cells[[k]] <- list(sample   = vn,
+                         colour   = unname(aes_vals$colors[vn]),
+                         linetype = unname(aes_vals$line_types[vn]),
+                         shape    = unname(aes_vals$shapes[vn]),
+                         filled   = unname(aes_vals$filled_map[vn]))
+    }
+    if (length(cells) < 1) return(NULL)
+    out <- list(rows = rows, cols = cols, cells = cells)
+    attr(out, "clashes") <- clashes
+    out
+  }
+
+  # Styling handed to matrix_legend_grob(): the swatch weight, point size and
+  # font follow the same sidebar controls the plotted lines do, so the legend
+  # matches the figure.
+  matrix_legend_opts <- function() {
+    num <- function(v, d) {
+      x <- suppressWarnings(as.numeric(v %||% d))
+      if (length(x) == 1 && is.finite(x)) x else d
+    }
+    lfs <- suppressWarnings(as.numeric(input$legend_font_size %||% NA))
+    fs  <- if (length(lfs) == 1 && is.finite(lfs)) lfs
+           else num(input$axis_text_font_size, 12)
+    list(title       = as.character(input$matrix_legend_title %||% "")[1],
+         lwd         = num(input$line_thickness, 1.2) * MATRIX_PT,
+         show_points = isTRUE(input$show_points %||% TRUE) &&
+                       isTRUE(input$matrix_swatch_points %||% TRUE),
+         point_size  = num(input$shape_size, 4) * MATRIX_PT,
+         point_lwd   = num(input$point_stroke, 0.5) * MATRIX_STROKE / 2,
+         swatch_len  = num(input$matrix_swatch_len, 34),
+         col_gap     = num(input$matrix_col_gap, 10),
+         row_gap     = num(input$matrix_row_gap, 8),
+         fontsize    = fs,
+         fontfamily  = as.character(input$font_family %||% "")[1],
+         fontface    = as.character(input$legend_text_face %||% "plain")[1],
+         box         = isTRUE(input$matrix_legend_box))
+  }
+
+  # The finished legend grob + where it goes, or NULL when matrix mode is off /
+  # nothing has been assigned.  A plain function (not a reactive) so that any
+  # reactive calling it picks up a dependency on every input it reads.
+  matrix_legend_now <- function(samples, aes_vals = NULL) {
+    if (!identical(input$legend_position %||% "right", "matrix")) return(NULL)
+    spec <- tryCatch(matrix_legend_spec(samples, aes_vals), error = function(e) NULL)
+    if (is.null(spec)) return(NULL)
+    leg <- tryCatch(matrix_legend_grob(spec, matrix_legend_opts()),
+                    error = function(e) NULL)
+    if (is.null(leg)) return(NULL)
+    gx <- suppressWarnings(as.numeric(input$legend_x %||% 0.85))
+    gy <- suppressWarnings(as.numeric(input$legend_y %||% 0.95))
+    list(grob      = leg,
+         placement = as.character(input$matrix_legend_placement %||% "right")[1],
+         x         = if (length(gx) == 1 && is.finite(gx)) gx else 0.85,
+         y         = if (length(gy) == 1 && is.finite(gy)) gy else 0.95,
+         clashes   = attr(spec, "clashes"))
+  }
+
+  # The one call every grob consumer makes.  No-op unless matrix mode is on.
+  attach_mleg <- function(g, samples = NULL, aes_vals = NULL) {
+    if (is.null(samples)) samples <- input$selected_samples
+    ml <- tryCatch(matrix_legend_now(samples, aes_vals), error = function(e) NULL)
+    if (is.null(ml)) return(g)
+    tryCatch(attach_matrix_legend(g, ml$grob, ml$placement, pad_pt = 8,
+                                  x = ml$x, y = ml$y),
+             error = function(e) g)
+  }
+
+  # One notification per distinct clash set, not one per reactive flush.
+  mleg_clash_seen <- reactiveVal("")
+  observe({
+    if (!identical(input$legend_position %||% "right", "matrix")) return(NULL)
+    samps <- input$selected_samples
+    if (is.null(samps) || length(samps) == 0) return(NULL)
+    spec <- tryCatch(matrix_legend_spec(samps), error = function(e) NULL)
+    cl   <- if (is.null(spec)) character(0) else (attr(spec, "clashes") %||% character(0))
+    key  <- paste(cl, collapse = "|")
+    if (!nzchar(key)) { isolate(mleg_clash_seen("")); return(NULL) }
+    if (identical(key, isolate(mleg_clash_seen()))) return(NULL)
+    isolate(mleg_clash_seen(key))
+    tryCatch(showNotification(
+      paste0("Matrix legend: ", paste(cl, collapse = ", "),
+             " landed on a row/column cell already taken by an earlier sample and ",
+             "were left out. Give each sample a unique Row + Column pair."),
+      type = "warning", duration = 10), error = function(e) invisible(NULL))
+  })
+
   # Floating labels are npc-positioned against THE panel viewport, so in a facet
   # grid the same label would be drawn in every panel.  Rather than emit a wrong
   # figure silently the renderer falls back to a right-hand legend and says so.
@@ -5381,6 +5793,9 @@ server <- function(input, output, session) {
     #   "floating"    -> no legend box; each name is a draggable text grob
     #                    drawn into the panel (see the block before coord_cartesian).
     float_mode     <- identical(lp_mode, "floating")
+    #   "matrix"      -> no ggplot guide box at all; a grid/gtable matrix legend
+    #                    is bolted onto the finished gtable by attach_mleg().
+    matrix_mode    <- identical(lp_mode, "matrix")
     use_end_labels <- isTRUE(input$show_end_labels) || direct_labels
 
     plot_data$variable <- factor(plot_data$variable, levels = samples)
@@ -5776,7 +6191,7 @@ server <- function(input, output, session) {
       axis.ticks        = element_line(color = "black", linewidth = 0.5),
       axis.ticks.length = unit(0.15, "cm"),
       legend.position   = {
-        if (use_end_labels || float_mode) "none"
+        if (use_end_labels || float_mode || matrix_mode) "none"
         else if (!is.null(auto_corner)) auto_corner$pos
         else if (lp_mode == "inside") c(
           if (!is.null(input$legend_x)) input$legend_x else 0.85,
@@ -5785,7 +6200,7 @@ server <- function(input, output, session) {
         else lp_mode
       },
       legend.justification =
-        if (use_end_labels || float_mode) "center"
+        if (use_end_labels || float_mode || matrix_mode) "center"
         else if (!is.null(auto_corner)) auto_corner$just
         else if (lp_mode == "inside") c("right", "top")
         else "center",
@@ -6053,6 +6468,18 @@ server <- function(input, output, session) {
     # "direct" hides the legend box (and forces end labels), so it needs no
     # extra width — same as none / inside / auto_inside.
     show_end <- isTRUE(input$show_end_labels) || identical(lp, "direct")
+    # "matrix": the legend is a real gtable cell, so in exact-panel mode the
+    # measured canvas already contains it.  Legacy (non-exact) mode still sizes
+    # the device by hand, so a right/left matrix legend needs its measured width
+    # reserved here or it would be drawn off the canvas.
+    if (identical(lp, "matrix")) {
+      req(input$selected_samples)
+      ml <- tryCatch(matrix_legend_now(input$selected_samples), error = function(e) NULL)
+      if (is.null(ml) || !(ml$placement %in% c("right", "left"))) return(0L)
+      w <- tryCatch(matrix_grob_size_pt(ml$grob)[["w"]], error = function(e) NA_real_)
+      if (!is.finite(w)) return(0L)
+      return(as.integer(ceiling((w + 8) / 0.75)))   # 1 px = 0.75 pt at 96 dpi
+    }
     if (show_end || lp != "right") return(0L)
     req(input$selected_samples)
     ll <- tryCatch(resolve_aesthetics(input$selected_samples)$leg_labels,
@@ -6077,7 +6504,7 @@ server <- function(input, output, session) {
   # overlay can never disagree — which is what keeps the overlay maths exact.
   current_grob <- reactive({
     p <- generate_plot()
-    if (exact_panel_on()) {
+    g <- if (exact_panel_on()) {
       pp <- panel_px()
       tryCatch(expand_for_tall_legend(
                  fix_panel_size(p, NULL, NULL,
@@ -6090,6 +6517,9 @@ server <- function(input, output, session) {
                               base_h_px = if (!is.null(input$plot_height)) input$plot_height else 600),
                error = function(e) ggplotGrob(p))
     }
+    # Matrix legend goes on AFTER the panel is pinned and BEFORE plot_dims()
+    # measures the canvas, so the measurement already includes it.
+    attach_mleg(g)
   })
 
   plot_dims <- reactive({
@@ -6542,6 +6972,7 @@ server <- function(input, output, session) {
                            panel_w_pt = ep[["w"]] * 72,
                            panel_h_pt = ep[["h"]] * 72)),
           error = function(e) ggplotGrob(p))
+        g  <- attach_mleg(g)          # BEFORE the measurement (order matters)
         m <- tryCatch(pad_canvas(measure_canvas_in(g)), error = function(e) NULL)
         if (is.null(m) || !all(is.finite(c(m$w_in, m$h_in))))
           m <- list(w_in = ep[["w"]] + 1.5, h_in = ep[["h"]] + 1.2)
@@ -6554,6 +6985,7 @@ server <- function(input, output, session) {
           fix_panel_size(p, base_w_px = w_in * 96, base_h_px = h_in * 96),
           error = function(e) ggplotGrob(p)
         )
+        g <- attach_mleg(g)
         total_w_in <- w_in + extra_in
       }
       switch(fmt,
@@ -6610,7 +7042,11 @@ server <- function(input, output, session) {
       pw <- canvas_w_in * 96 * 0.75 * 0.68
       ph <- canvas_h_in * 96 * 0.75 * 0.78
     }
-    build_parity_frames(plots, pw, ph, fit_w_in = fit_w_in, fit_h_in = fit_h_in)
+    # The matrix legend is built ONCE from the FULL sample selection and glued
+    # onto every frame, so all build slides / GIF frames carry an identical
+    # legend and the canvas never moves as lines are added.
+    build_parity_frames(plots, pw, ph, fit_w_in = fit_w_in, fit_h_in = fit_h_in,
+                        attach = function(g) attach_mleg(g, samps, aes_v))
   }
 
   # ── PowerPoint Export ────────────────────────────────────────────────────────
@@ -6681,7 +7117,12 @@ server <- function(input, output, session) {
         if (isTRUE(input$notes_pptx_slide)) {
           n <- get_notes()
           fmt_field <- function(label, val) {
-            if (nchar(trimws(val)) > 0) paste0(label, ": ", trimws(val)) else NULL
+            # A note field that is absent (NULL / list()) makes nchar() return
+            # length 0, which would abort the whole download handler; coerce and
+            # length-check first.
+            val <- tryCatch(as.character(val), error = function(e) character(0))
+            if (length(val) == 1 && !is.na(val) && nchar(trimws(val)) > 0)
+              paste0(label, ": ", trimws(val)) else NULL
           }
           lines <- c(
             fmt_field("Experiment ID",    n$exp_id),

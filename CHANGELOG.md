@@ -2,6 +2,17 @@
 
 ## 2026-08-22 — publication figure layout
 
+- **Matrix (grid) legend**: new legend position building a two-factor legend
+  (rows x columns, e.g. condition x MOI) where each cell is the sample's real
+  swatch. Corner title, five placements, swatch/gap sizing, optional box,
+  markup in labels; attaches into the grob pipeline so exact panel sizes are
+  untouched and every export (incl. PPTX/GIF parity frames) matches.
+  Supervisor fix during review: track width used grid::grobWidth() on a
+  gtable, which omits max(grobwidth) cells and clipped the last legend
+  column - now uses gtable_width()/gtable_height() as draw-time units.
+- Hardened the PPTX experiment-notes formatter against absent note fields
+  (same length-zero nchar() class of bug as the settings loader).
+
 - **Multi-panel faceting** (new *Panels* tab): assign samples to panels
   manually or facet by a metadata column; panels-per-row, shared/free
   scales, three strip styles. Exact-panel sizing now pins **every** facet

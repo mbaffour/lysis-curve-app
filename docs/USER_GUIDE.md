@@ -93,6 +93,28 @@ legend get whatever extra canvas they need: a 3-sample legend and a
 This is what makes multi-figure layouts line up perfectly. Turning it off
 restores the legacy behavior (canvas size fixed, panel a fraction of it).
 
+### Matrix (grid) legend
+
+Legend → Position → **Matrix (grid) legend** builds a two-factor legend grid
+like the ones in Nature-style figures:
+
+```
+        MOI    0      0.1     10
+Control      -----  -----   -----
+Phage        -----  -----   -----
+```
+
+Give each sample a **Row** and a **Column** (e.g. Row = strain/condition,
+Column = MOI) and each cell draws that sample's real line swatch - its
+colour, line type and point symbol. Blank assignments omit the sample; if two
+samples land in one cell the first wins and you get a warning. Options: a
+corner **title** (e.g. `MOI`), placement (right / left / top / bottom /
+inside the plot), swatch length, row and column gaps, an optional box, and
+whether to draw point symbols. Row and column labels accept the full markup
+(`*italic*`, `**bold**`, `A_{550}`). The grid is part of the figure, so it
+appears identically in every export, and in PPTX/GIF builds the complete
+grid is present from the first slide/frame.
+
 ### Publication figure layout
 
 New **Panels** sidebar tab and companion controls reproduce the standard
