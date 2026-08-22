@@ -884,6 +884,17 @@ matrix_legend_grob <- function(spec, opts = list()) {
 
 # Absolute size of any grob (gtables included), resolved on a throw-away pdf
 # device exactly the way measure_canvas_in() does it.
+# Open a PDF device that can render SYSTEM font families. The base pdf()
+# device only knows its own font families and aborts with "invalid font type"
+# when the plot theme uses e.g. "Microsoft Sans Serif" (the app default).
+# cairo_pdf handles them and embeds the fonts; fall back when cairo is absent.
+open_pdf_device <- function(file, width, height, onefile = TRUE, ...) {
+  if (isTRUE(capabilities("cairo")))
+    grDevices::cairo_pdf(file, width = width, height = height, onefile = onefile)
+  else
+    grDevices::pdf(file, width = width, height = height, onefile = onefile, ...)
+}
+
 matrix_grob_size_pt <- function(gr) {
   cur <- grDevices::dev.cur()
   grDevices::pdf(NULL, width = 30, height = 30)
@@ -1217,7 +1228,7 @@ html_table(meta$settings_df, class = "wrap"),
 build_pdf_report <- function(file, meta, plot_obj, stats_df, metrics_df,
                              width = 10, height = 8) {
   stopifnot(requireNamespace("gridExtra", quietly = TRUE))
-  grDevices::pdf(file, width = width, height = height, onefile = TRUE)
+  open_pdf_device(file, width = width, height = height, onefile = TRUE)
   on.exit(grDevices::dev.off(), add = TRUE)
 
   fscale <- (meta$font_pt %||% 14) / 14   # report font size control
@@ -7005,7 +7016,7 @@ server <- function(input, output, session) {
                                res = dpi, units = "px", compression = "lzw"),
         jpeg = grDevices::jpeg(file, width = total_w_in * dpi, height = h_in * dpi,
                                res = dpi, units = "px"),
-        grDevices::pdf(file, width = total_w_in, height = h_in)
+        open_pdf_device(file, width = total_w_in, height = h_in)
       )
       tryCatch(grid::grid.draw(g), finally = grDevices::dev.off())
     }
@@ -7587,7 +7598,7 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       n <- get_notes()
-      grDevices::pdf(file, width = 8.5, height = 11, paper = "letter")
+      open_pdf_device(file, width = 8.5, height = 11)
       tryCatch(draw_notes_page(n), finally = grDevices::dev.off())
     }
   )
@@ -9528,7 +9539,13 @@ server <- function(input, output, session) {
             paste(" ZIP created with", length(files), "file(s)."))
       )
 
-      utils::zip(zip_file, files = files, flags = "-j")
+      # utils::zip() shells out to an external "zip" executable, which Windows
+      # R does not ship - the batch download then returned an empty/404 file.
+      # The zip package is pure R/C and needs no external binary.
+      if (requireNamespace("zip", quietly = TRUE))
+        zip::zip(zip_file, files = basename(files), root = dirname(files[1]))
+      else
+        utils::zip(zip_file, files = files, flags = "-j")
     }
   )
 

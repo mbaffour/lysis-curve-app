@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-08-22 — full regression sweep fixes
+
+Found by an end-to-end pass over every feature and every export:
+
+- **PDF outputs failed with "invalid font type"** — a regression from making
+  Microsoft Sans Serif the default: the analysis PDF report, the notes PDF,
+  and the export fallback still used the base `pdf()` device, which cannot
+  map system font families. All PDF outputs now go through a shared
+  `open_pdf_device()` helper (cairo_pdf when available, base pdf otherwise).
+  The analysis PDF report went from a 157-byte error page to a valid 87 KB
+  PDF 1.7.
+- **Batch Export ZIP produced an empty download on Windows** — `utils::zip()`
+  shells out to an external `zip` executable that Windows R does not ship.
+  Now uses the pure-R `zip` package when available (added to the auto-install
+  list in run_app.R), with the old call as fallback. Verified: 6-file,
+  375 KB archive.
+
+
 ## 2026-08-22 — publication figure layout
 
 - **Matrix (grid) legend**: new legend position building a two-factor legend

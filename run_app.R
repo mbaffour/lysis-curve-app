@@ -3,7 +3,7 @@
 # Launched by the "Run OD Growth Curve Analyzer" (.bat / .command) scripts, or run:  Rscript run_app.R
 APP  <- "Lysis Curve Ap 26.03.13.R"
 PKGS <- c("shiny","tidyverse","ggpubr","ggprism","ggrepel","scales","svglite","jsonlite",
-          "zoo","DT","gifski","officer","rvg","base64enc","gridExtra","rhandsontable")
+          "zoo","DT","gifski","officer","rvg","base64enc","gridExtra","rhandsontable","zip")
 options(repos = c(CRAN = "https://cloud.r-project.org"))
 
 # Use a writable personal library — R in "Program Files" usually isn't user-writable,
